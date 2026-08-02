@@ -1,0 +1,10 @@
+local version = require("inliner.version")
+
+assert(version.is_at_least("0.1.0", "0.1.0") == true, "same version should pass")
+assert(version.is_at_least("0.1.1", "0.1.0") == true, "newer patch should pass")
+assert(version.is_at_least("0.2.0", "0.1.9") == true, "newer minor should pass")
+assert(version.is_at_least("1.0.0", "0.9.9") == true, "newer major should pass")
+assert(version.is_at_least("0.0.9", "0.1.0") == false, "older minor should fail")
+assert(version.is_at_least("0.1.0", "0.1.1") == false, "older patch should fail")
+assert(version.is_at_least("bad", "0.1.0") == false, "invalid current version should fail")
+assert(version.is_at_least("0.1.0", "bad") == false, "invalid minimum version should fail")
