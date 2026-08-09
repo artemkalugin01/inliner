@@ -33,6 +33,12 @@ func TestGoInlineBuilderIncludesPackageContext(t *testing.T) {
 				{RelativePath: "internal/service/service.go"},
 			},
 			Current: &gocontext.Function{Signature: "(*Server) HandleUser(id string) error"},
+			Declaration: &gocontext.Declaration{
+				Kind:         "struct",
+				Name:         "User",
+				Detail:       "type User struct {\n\tID string\n}",
+				RelativeFile: "internal/service/service.go",
+			},
 			Visible: []gocontext.VisibleIdentifier{
 				{Name: "s", Type: "*Server", Kind: "receiver"},
 				{Name: "id", Type: "string", Kind: "parameter"},
@@ -67,6 +73,9 @@ func TestGoInlineBuilderIncludesPackageContext(t *testing.T) {
 		"Package: service",
 		"internal/service/service.go",
 		"Current function or method:",
+		"Current declaration:",
+		"struct User from internal/service/service.go",
+		"type User struct",
 		"Visible identifiers:",
 		"s *Server receiver",
 		"id string parameter",

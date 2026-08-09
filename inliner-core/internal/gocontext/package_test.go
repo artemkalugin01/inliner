@@ -311,6 +311,106 @@ type Server struct{}
 	}
 }
 
+func TestCollectorCollectWithOverlayAtDetectsCurrentStructDeclaration(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "service")
+	mustMkdir(t, pkgDir)
+	currentFile := filepath.Join(pkgDir, "service.go")
+	content := `package service
+
+type User struct {
+	ID string
+	Name string
+}
+`
+	writeFile(t, currentFile, content)
+
+	ctx, err := NewCollector().CollectWithOverlayAt(currentFile, root, content, strings.Index(content, "Name string"))
+	if err != nil {
+		t.Fatalf("CollectWithOverlayAt returned error: %v", err)
+	}
+
+	if ctx.Declaration == nil {
+		t.Fatal("Declaration is nil, want struct declaration")
+	}
+	if ctx.Declaration.Kind != "struct" || ctx.Declaration.Name != "User" || ctx.Declaration.RelativeFile != "service/service.go" {
+		t.Fatalf("Declaration = %+v", ctx.Declaration)
+	}
+	if !strings.Contains(ctx.Declaration.Detail, "type User struct") || !strings.Contains(ctx.Declaration.Detail, "Name string") {
+		t.Fatalf("Declaration.Detail = %q", ctx.Declaration.Detail)
+	}
+}
+
+func TestCollectorCollectWithOverlayAtDetectsCurrentInterfaceDeclaration(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "service")
+	mustMkdir(t, pkgDir)
+	currentFile := filepath.Join(pkgDir, "service.go")
+	content := `package service
+
+type Store interface {
+	Find(id string) (User, error)
+}
+`
+	writeFile(t, currentFile, content)
+
+	ctx, err := NewCollector().CollectWithOverlayAt(currentFile, root, content, strings.Index(content, "Find"))
+	if err != nil {
+		t.Fatalf("CollectWithOverlayAt returned error: %v", err)
+	}
+
+	if ctx.Declaration == nil || ctx.Declaration.Kind != "interface" || ctx.Declaration.Name != "Store" {
+		t.Fatalf("Declaration = %+v, want Store interface", ctx.Declaration)
+	}
+}
+
+func TestCollectorCollectWithOverlayAtDetectsCurrentTypeAliasDeclaration(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "service")
+	mustMkdir(t, pkgDir)
+	currentFile := filepath.Join(pkgDir, "service.go")
+	content := `package service
+
+type UserID string
+`
+	writeFile(t, currentFile, content)
+
+	ctx, err := NewCollector().CollectWithOverlayAt(currentFile, root, content, strings.Index(content, "string"))
+	if err != nil {
+		t.Fatalf("CollectWithOverlayAt returned error: %v", err)
+	}
+
+	if ctx.Declaration == nil || ctx.Declaration.Kind != "type" || ctx.Declaration.Name != "UserID" {
+		t.Fatalf("Declaration = %+v, want UserID type", ctx.Declaration)
+	}
+}
+
+func TestCollectorCollectWithOverlayAtDetectsCurrentValueDeclaration(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "service")
+	mustMkdir(t, pkgDir)
+	currentFile := filepath.Join(pkgDir, "service.go")
+	content := `package service
+
+const defaultLimit = 10
+
+var errNotFound = errors.New("not found")
+`
+	writeFile(t, currentFile, content)
+
+	ctx, err := NewCollector().CollectWithOverlayAt(currentFile, root, content, strings.Index(content, "errors.New"))
+	if err != nil {
+		t.Fatalf("CollectWithOverlayAt returned error: %v", err)
+	}
+
+	if ctx.Declaration == nil || ctx.Declaration.Kind != "var" || ctx.Declaration.Name != "errNotFound" {
+		t.Fatalf("Declaration = %+v, want errNotFound var", ctx.Declaration)
+	}
+	if !strings.Contains(ctx.Declaration.Detail, `errNotFound = errors.New("not found")`) {
+		t.Fatalf("Declaration.Detail = %q", ctx.Declaration.Detail)
+	}
+}
+
 func TestCollectorCollectWithOverlayAtCollectsVisibleIdentifiers(t *testing.T) {
 	root := t.TempDir()
 	pkgDir := filepath.Join(root, "service")

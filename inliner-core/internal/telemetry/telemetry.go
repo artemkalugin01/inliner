@@ -29,6 +29,7 @@ type Event struct {
 	PackageTypes          int    `json:"packageTypes,omitempty"`
 	PackageInterfaces     int    `json:"packageInterfaces,omitempty"`
 	PackageFunctions      int    `json:"packageFunctions,omitempty"`
+	CurrentDeclaration    bool   `json:"currentDeclaration,omitempty"`
 	VisibleIdentifiers    int    `json:"visibleIdentifiers,omitempty"`
 	SiblingMethods        int    `json:"siblingMethods,omitempty"`
 	RecentEdits           int    `json:"recentEdits,omitempty"`

@@ -22,6 +22,7 @@ type PackageContext struct {
 	Files       []File
 	Imports     []Import
 	Current     *Function
+	Declaration *Declaration
 	Visible     []VisibleIdentifier
 	Siblings    []Function
 	Values      []Value
@@ -46,6 +47,14 @@ type Function struct {
 	Name         string
 	Receiver     string
 	Signature    string
+	File         string
+	RelativeFile string
+}
+
+type Declaration struct {
+	Kind         string
+	Name         string
+	Detail       string
 	File         string
 	RelativeFile string
 }
@@ -141,6 +150,7 @@ func (c *Collector) collect(currentFile string, projectRoot string, overlay *str
 		c.collectFile(set, file, &ctx)
 		if filepath.Clean(path) == currentFile {
 			ctx.Current, ctx.Visible = currentFunctionContextAtOffset(set, file, offset)
+			ctx.Declaration = currentDeclarationContextAtOffset(set, file, offset)
 		}
 	}
 
@@ -152,10 +162,74 @@ func (c *Collector) collect(currentFile string, projectRoot string, overlay *str
 		ctx.Files = append(ctx.Files, File{Path: currentFile, RelativePath: relativePath(projectRoot, currentFile)})
 		c.collectFile(set, overlayFile, &ctx)
 		ctx.Current, ctx.Visible = currentFunctionContextAtOffset(set, overlayFile, offset)
+		ctx.Declaration = currentDeclarationContextAtOffset(set, overlayFile, offset)
 	}
 
 	sortPackageContext(&ctx, currentFile, cursorTokens(overlay, offset))
 	return ctx, nil
+}
+
+func currentDeclarationContextAtOffset(set *token.FileSet, file *ast.File, offset int) *Declaration {
+	if offset < 0 {
+		return nil
+	}
+	tokenFile := set.File(file.Pos())
+	if tokenFile == nil {
+		return nil
+	}
+	if offset > tokenFile.Size() {
+		offset = tokenFile.Size()
+	}
+	cursor := tokenFile.Pos(offset)
+
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || cursor < genDecl.Pos() || cursor > genDecl.End() {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			if cursor < spec.Pos() || cursor > spec.End() {
+				continue
+			}
+			return declarationFromSpec(set, genDecl, spec)
+		}
+		return declarationFromGenDecl(set, genDecl)
+	}
+	return nil
+}
+
+func declarationFromSpec(set *token.FileSet, decl *ast.GenDecl, spec ast.Spec) *Declaration {
+	switch spec := spec.(type) {
+	case *ast.TypeSpec:
+		kind := "type"
+		switch spec.Type.(type) {
+		case *ast.StructType:
+			kind = "struct"
+		case *ast.InterfaceType:
+			kind = "interface"
+		}
+		return &Declaration{Kind: kind, Name: spec.Name.Name, Detail: "type " + nodeString(set, spec), File: set.Position(spec.Pos()).Filename}
+	case *ast.ValueSpec:
+		name := ""
+		if len(spec.Names) > 0 {
+			name = spec.Names[0].Name
+		}
+		kind := strings.ToLower(decl.Tok.String())
+		return &Declaration{Kind: kind, Name: name, Detail: kind + " " + nodeString(set, spec), File: set.Position(spec.Pos()).Filename}
+	}
+	return nil
+}
+
+func declarationFromGenDecl(set *token.FileSet, decl *ast.GenDecl) *Declaration {
+	if len(decl.Specs) == 0 {
+		return nil
+	}
+	declaration := declarationFromSpec(set, decl, decl.Specs[0])
+	if declaration == nil {
+		return nil
+	}
+	declaration.Detail = nodeString(set, decl)
+	return declaration
 }
 
 func currentFunctionContextAtOffset(set *token.FileSet, file *ast.File, offset int) (*Function, []VisibleIdentifier) {
@@ -681,6 +755,9 @@ func sortPackageContext(ctx *PackageContext, currentFile string, cursorTokens ma
 	}
 	for i := range ctx.Functions {
 		ctx.Functions[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Functions[i].File)
+	}
+	if ctx.Declaration != nil {
+		ctx.Declaration.RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Declaration.File)
 	}
 	for i := range ctx.Types {
 		ctx.Types[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Types[i].File)

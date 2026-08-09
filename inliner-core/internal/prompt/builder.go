@@ -162,6 +162,26 @@ func writePackageContext(builder *strings.Builder, ctx gocontext.PackageContext,
 		builder.WriteString("\n")
 	}
 
+	if ctx.Declaration != nil {
+		builder.WriteString("Current declaration:\n")
+		builder.WriteString("- ")
+		builder.WriteString(ctx.Declaration.Kind)
+		if ctx.Declaration.Name != "" {
+			builder.WriteString(" ")
+			builder.WriteString(ctx.Declaration.Name)
+		}
+		if ctx.Declaration.RelativeFile != "" {
+			builder.WriteString(" from ")
+			builder.WriteString(ctx.Declaration.RelativeFile)
+		}
+		builder.WriteString("\n")
+		if ctx.Declaration.Detail != "" {
+			builder.WriteString("```go\n")
+			builder.WriteString(ctx.Declaration.Detail)
+			builder.WriteString("\n```\n")
+		}
+	}
+
 	if len(ctx.Visible) > 0 {
 		builder.WriteString("Visible identifiers:\n")
 		for _, identifier := range ctx.Visible[:min(len(ctx.Visible), budget.MaxVisible)] {

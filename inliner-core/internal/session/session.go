@@ -523,6 +523,7 @@ func (s *Session) recordTelemetry(request completion.Request, life lifecycle) {
 		event.PackageTypes = len(request.Package.Types)
 		event.PackageInterfaces = len(request.Package.Interfaces)
 		event.PackageFunctions = len(request.Package.Functions)
+		event.CurrentDeclaration = request.Package.Declaration != nil
 		event.VisibleIdentifiers = len(request.Package.Visible)
 		event.SiblingMethods = len(request.Package.Siblings)
 	}

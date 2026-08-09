@@ -67,6 +67,7 @@ Debug logging settings:
 
 - `INLINER_DEBUG_VERBOSE`: default `false`. Set to `1` or `true` to enable verbose debug logging.
 - `INLINER_DEBUG_DIR`: default system temp directory plus `inliner-debug`.
+- `INLINER_TELEMETRY_ENABLED`: default `false`. Set to `1` or `true` to write core-only request lifecycle telemetry to `request-lifecycle.jsonl` in `INLINER_DEBUG_DIR`.
 
 When verbose debug logging is enabled, Ollama requests write:
 
@@ -74,6 +75,8 @@ When verbose debug logging is enabled, Ollama requests write:
 - `prompts/*.prompt.txt`: one prompt per file, named with a human-readable Moscow-time timestamp, for example `2026-08-02_14-30-45.123_MSK.prompt.txt`. The first line is `projectHash`, a SHA-256 hash of the absolute project path for log correlation only. The second line contains Ollama model metadata. These metadata lines are not included in the prompt sent to the model.
 
 Debug prompts contain source context and should be treated as sensitive project data.
+
+When telemetry is enabled, `request-lifecycle.jsonl` contains one JSON object per completion request. Records include structured timing fields for core receive-to-start, context collection, recent-edit selection, request build, prompt build, provider, response write, and total core time. Telemetry intentionally avoids prompt/source text and stores file/project hashes instead of raw paths.
 
 ## Editor To Core
 
