@@ -60,6 +60,7 @@ Prompt context budget settings:
 - `INLINER_PROMPT_MAX_INTERFACE_METHODS`: default `12`.
 - `INLINER_PROMPT_MAX_VISIBLE`: default `80`.
 - `INLINER_PROMPT_MAX_SIBLINGS`: default `40`.
+- `INLINER_PROMPT_MAX_VALUES`: default `80`.
 - `INLINER_PROMPT_MAX_FUNCTIONS`: default `120`.
 
 Debug logging settings:

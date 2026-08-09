@@ -24,6 +24,7 @@ type PackageContext struct {
 	Current     *Function
 	Visible     []VisibleIdentifier
 	Siblings    []Function
+	Values      []Value
 	Functions   []Function
 	Types       []Type
 	Interfaces  []Interface
@@ -53,6 +54,15 @@ type VisibleIdentifier struct {
 	Name string
 	Type string
 	Kind string
+}
+
+type Value struct {
+	Name         string
+	Type         string
+	Value        string
+	Kind         string
+	File         string
+	RelativeFile string
 }
 
 type Type struct {
@@ -203,8 +213,11 @@ func (c *Collector) collectFile(set *token.FileSet, file *ast.File, ctx *Package
 		case *ast.FuncDecl:
 			ctx.Functions = append(ctx.Functions, functionFromDecl(set, decl))
 		case *ast.GenDecl:
-			if decl.Tok == token.TYPE {
+			switch decl.Tok {
+			case token.TYPE:
 				collectTypeDecl(set, decl, ctx)
+			case token.CONST, token.VAR:
+				collectValueDecl(set, decl, ctx)
 			}
 		}
 	}
@@ -475,6 +488,59 @@ func collectTypeDecl(set *token.FileSet, decl *ast.GenDecl, ctx *PackageContext)
 	}
 }
 
+func collectValueDecl(set *token.FileSet, decl *ast.GenDecl, ctx *PackageContext) {
+	kind := strings.ToLower(decl.Tok.String())
+	lastType := ""
+	lastValues := []string{}
+
+	for _, spec := range decl.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+
+		valueType := ""
+		if valueSpec.Type != nil {
+			valueType = nodeString(set, valueSpec.Type)
+			lastType = valueType
+		} else if decl.Tok == token.CONST {
+			valueType = lastType
+		}
+
+		values := make([]string, 0, len(valueSpec.Values))
+		for _, value := range valueSpec.Values {
+			values = append(values, nodeString(set, value))
+		}
+		if len(values) > 0 {
+			lastValues = values
+		} else if decl.Tok == token.CONST {
+			values = lastValues
+		}
+
+		for i, name := range valueSpec.Names {
+			if name.Name == "_" {
+				continue
+			}
+			value := ""
+			if i < len(values) {
+				value = values[i]
+			} else if len(values) == 1 {
+				value = values[0]
+			}
+			if valueType == "" && i < len(valueSpec.Values) {
+				valueType = inferredExprType(set, valueSpec.Values[i])
+			}
+			ctx.Values = append(ctx.Values, Value{
+				Name:  name.Name,
+				Type:  valueType,
+				Value: value,
+				Kind:  kind,
+				File:  set.Position(name.Pos()).Filename,
+			})
+		}
+	}
+}
+
 func receiverString(set *token.FileSet, fields *ast.FieldList) string {
 	if fields == nil || len(fields.List) == 0 {
 		return ""
@@ -619,6 +685,9 @@ func sortPackageContext(ctx *PackageContext, currentFile string, cursorTokens ma
 	for i := range ctx.Types {
 		ctx.Types[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Types[i].File)
 	}
+	for i := range ctx.Values {
+		ctx.Values[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Values[i].File)
+	}
 	for i := range ctx.Interfaces {
 		ctx.Interfaces[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Interfaces[i].File)
 	}
@@ -660,6 +729,17 @@ func sortPackageContext(ctx *PackageContext, currentFile string, cursorTokens ma
 		}
 		return ctx.Types[i].Name < ctx.Types[j].Name
 	})
+	sort.SliceStable(ctx.Values, func(i, j int) bool {
+		iScore := valueScore(ctx.Values[i], currentFile, cursorTokens)
+		jScore := valueScore(ctx.Values[j], currentFile, cursorTokens)
+		if iScore != jScore {
+			return iScore > jScore
+		}
+		if ctx.Values[i].RelativeFile == ctx.Values[j].RelativeFile {
+			return ctx.Values[i].Name < ctx.Values[j].Name
+		}
+		return ctx.Values[i].RelativeFile < ctx.Values[j].RelativeFile
+	})
 	sort.SliceStable(ctx.Interfaces, func(i, j int) bool {
 		iScore := typeScore(ctx.Interfaces[i].Name, ctx.Interfaces[i].File, currentFile, visibleTypes, cursorTokens)
 		jScore := typeScore(ctx.Interfaces[j].Name, ctx.Interfaces[j].File, currentFile, visibleTypes, cursorTokens)
@@ -668,6 +748,19 @@ func sortPackageContext(ctx *PackageContext, currentFile string, cursorTokens ma
 		}
 		return ctx.Interfaces[i].Name < ctx.Interfaces[j].Name
 	})
+}
+
+func valueScore(value Value, currentFile string, cursorTokens map[string]bool) int {
+	score := fileScore(value.File, currentFile)
+	if cursorTokens[value.Name] {
+		score += 300
+	}
+	for _, token := range identifierPattern.FindAllString(value.Type+" "+value.Value, -1) {
+		if cursorTokens[token] {
+			score += 50
+		}
+	}
+	return score
 }
 
 func siblingMethods(functions []Function, current *Function) []Function {

@@ -20,6 +20,7 @@ const (
 	DefaultMaxInterfaceMethods = 12
 	DefaultMaxVisible          = 80
 	DefaultMaxSiblings         = 40
+	DefaultMaxValues           = 80
 	DefaultMaxFunctions        = 120
 	DefaultMaxRecentEdits      = 5
 )
@@ -32,6 +33,7 @@ type GoInlineBuilder struct {
 	MaxInterfaceMethods int
 	MaxVisible          int
 	MaxSiblings         int
+	MaxValues           int
 	MaxFunctions        int
 	MaxRecentEdits      int
 }
@@ -94,6 +96,9 @@ func (b GoInlineBuilder) withDefaults() GoInlineBuilder {
 	}
 	if b.MaxSiblings <= 0 {
 		b.MaxSiblings = DefaultMaxSiblings
+	}
+	if b.MaxValues <= 0 {
+		b.MaxValues = DefaultMaxValues
 	}
 	if b.MaxFunctions <= 0 {
 		b.MaxFunctions = DefaultMaxFunctions
@@ -213,6 +218,30 @@ func writePackageContext(builder *strings.Builder, ctx gocontext.PackageContext,
 			builder.WriteString("\n")
 		}
 		writeOmitted(builder, len(ctx.Types), budget.MaxTypes, "types")
+	}
+
+	if len(ctx.Values) > 0 {
+		builder.WriteString("Package constants and variables:\n")
+		for _, value := range ctx.Values[:min(len(ctx.Values), budget.MaxValues)] {
+			builder.WriteString("- ")
+			builder.WriteString(value.Kind)
+			builder.WriteString(" ")
+			builder.WriteString(value.Name)
+			if value.Type != "" {
+				builder.WriteString(" ")
+				builder.WriteString(value.Type)
+			}
+			if value.Value != "" {
+				builder.WriteString(" = ")
+				builder.WriteString(value.Value)
+			}
+			if value.RelativeFile != "" {
+				builder.WriteString(" from ")
+				builder.WriteString(value.RelativeFile)
+			}
+			builder.WriteString("\n")
+		}
+		writeOmitted(builder, len(ctx.Values), budget.MaxValues, "package values")
 	}
 
 	if len(ctx.Interfaces) > 0 {

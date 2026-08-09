@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -18,8 +19,25 @@ func TestCollectorCollectsCurrentPackageDeclarations(t *testing.T) {
 
 import (
 	"context"
+	"errors"
 	alias "io"
+	"log/slog"
 	_ "net/http/pprof"
+	"regexp"
+)
+
+const defaultLimit = 10
+
+const (
+	stateReady = "ready"
+	stateDone
+)
+
+var errNotFound = errors.New("not found")
+
+var (
+	logger = slog.Default()
+	idPattern = regexp.MustCompile(`+"`"+`^[a-z]+$`+"`"+`)
 )
 
 type User struct {
@@ -78,10 +96,23 @@ func TestOnly(t *testing.T) {}
 	}
 	if got := importSummaries(ctx.Imports); !reflect.DeepEqual(got, []string{
 		` "context" internal/service/service.go`,
+		` "errors" internal/service/service.go`,
 		`alias "io" internal/service/service.go`,
+		` "log/slog" internal/service/service.go`,
 		`_ "net/http/pprof" internal/service/service.go`,
+		` "regexp" internal/service/service.go`,
 	}) {
 		t.Fatalf("imports = %#v", got)
+	}
+	if got := valueSummaries(ctx.Values); !reflect.DeepEqual(got, []string{
+		`const defaultLimit = 10 internal/service/service.go`,
+		`const stateDone = "ready" internal/service/service.go`,
+		`const stateReady = "ready" internal/service/service.go`,
+		`var errNotFound result of errors.New = errors.New("not found") internal/service/service.go`,
+		`var idPattern result of regexp.MustCompile = regexp.MustCompile(` + "`" + `^[a-z]+$` + "`" + `) internal/service/service.go`,
+		`var logger result of slog.Default = slog.Default() internal/service/service.go`,
+	}) {
+		t.Fatalf("values = %#v", got)
 	}
 	if got := interfaceSummaries(ctx.Interfaces); !reflect.DeepEqual(got, []string{
 		"Store:FindUser(id string) (User, error),SaveUser(user User) error",
@@ -491,6 +522,23 @@ func typeNames(types []Type) []string {
 		names = append(names, typ.Name+":"+typ.Kind)
 	}
 	return names
+}
+
+func valueSummaries(values []Value) []string {
+	summaries := make([]string, 0, len(values))
+	for _, value := range values {
+		parts := []string{value.Kind, value.Name}
+		if value.Type != "" {
+			parts = append(parts, value.Type)
+		}
+		if value.Value != "" {
+			parts = append(parts, "=", value.Value)
+		}
+		parts = append(parts, value.RelativeFile)
+		summaries = append(summaries, strings.Join(parts, " "))
+	}
+	sort.Strings(summaries)
+	return summaries
 }
 
 func interfaceSummaries(interfaces []Interface) []string {

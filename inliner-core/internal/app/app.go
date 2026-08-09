@@ -59,6 +59,7 @@ func completionService(cfg config.Config) (*completion.Service, error) {
 				MaxInterfaceMethods: cfg.PromptMaxInterfaceMethods,
 				MaxVisible:          cfg.PromptMaxVisible,
 				MaxSiblings:         cfg.PromptMaxSiblings,
+				MaxValues:           cfg.PromptMaxValues,
 				MaxFunctions:        cfg.PromptMaxFunctions,
 			},
 			Generation: ollama.GenerationOptions{
