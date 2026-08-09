@@ -1,0 +1,95 @@
+{
+  "name": "inliner-vscode",
+  "displayName": "Inliner",
+  "description": "Inline Go completions powered by inliner-core.",
+  "version": "0.1.0",
+  "publisher": "aokalugin",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning"
+  ],
+  "activationEvents": [
+    "onLanguage:go",
+    "onCommand:inliner.start",
+    "onCommand:inliner.stop",
+    "onCommand:inliner.health",
+    "onCommand:inliner.complete"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "inliner.start",
+        "title": "Inliner: Start"
+      },
+      {
+        "command": "inliner.stop",
+        "title": "Inliner: Stop"
+      },
+      {
+        "command": "inliner.health",
+        "title": "Inliner: Health"
+      },
+      {
+        "command": "inliner.complete",
+        "title": "Inliner: Complete"
+      }
+    ],
+    "configuration": {
+      "title": "Inliner",
+      "properties": {
+        "inliner.coreCommand": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Command used to start inliner-core. Defaults to PATH inliner-core, sibling inliner-core/bin/inliner-core, or go run from sibling inliner-core."
+        },
+        "inliner.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start inliner-core automatically for Go files."
+        },
+        "inliner.provider": {
+          "type": "string",
+          "default": "ollama",
+          "enum": ["fake", "ollama"],
+          "description": "Provider passed to inliner-core through INLINER_PROVIDER."
+        },
+        "inliner.ollamaModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:7b",
+          "description": "Ollama model passed through INLINER_OLLAMA_MODEL."
+        },
+        "inliner.debugVerbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose inliner-core debug logging. Prompts contain source context."
+        },
+        "inliner.debugDir": {
+          "type": "string",
+          "default": "",
+          "description": "Debug log directory. Empty uses inliner-core default."
+        },
+        "inliner.requestTimeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "description": "VS Code-side timeout while waiting for a completion response."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  }
+}
