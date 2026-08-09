@@ -12,10 +12,16 @@ local defaults = {
   auto_suggest = true,
   auto_start = false,
   complete_key = nil,
+  debug_dir = vim.fs.joinpath(vim.fn.stdpath("cache"), "inliner-debug"),
+  debug_verbose = false,
   dismiss_key = "<C-]>",
   debounce_ms = 120,
   filetypes = { go = true },
   minimum_core_version = "0.1.0",
+  ollama_base_url = "http://127.0.0.1:11434",
+  ollama_model = nil,
+  suppress_expected_provider_errors = true,
+  suppress_in_comments_strings = false,
 }
 
 local state = {
@@ -29,6 +35,10 @@ local state = {
   pending_by_buf = {},
   suggestion_by_buf = {},
   pending_health_kind = nil,
+  last_core_error = nil,
+  last_health = nil,
+  selected_model = defaults.ollama_model,
+  cached_models = {},
   auto_suggest_enabled = defaults.auto_suggest,
   mapped_keys = {},
 }
@@ -79,6 +89,121 @@ local function cursor_offset(bufnr, row, col)
   return vim.api.nvim_buf_get_offset(bufnr, row) + col
 end
 
+local function debug_dir()
+  return state.config.debug_dir or defaults.debug_dir
+end
+
+local function ollama_base_url()
+  return vim.trim(state.config.ollama_base_url or defaults.ollama_base_url):gsub("/+$", "")
+end
+
+local function selected_model()
+  local model = state.selected_model or state.config.ollama_model
+  if model == nil or model == "" then
+    return nil
+  end
+  return model
+end
+
+local function core_env()
+  local env = {
+    INLINER_DEBUG_DIR = debug_dir(),
+    INLINER_DEBUG_VERBOSE = state.config.debug_verbose and "true" or "false",
+    INLINER_OLLAMA_BASE_URL = ollama_base_url(),
+  }
+  local model = selected_model()
+  if model then
+    env.INLINER_OLLAMA_MODEL = model
+  end
+  return env
+end
+
+local function parse_ollama_models(payload)
+  local ok, decoded = pcall(vim.json.decode, payload or "")
+  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" then
+    return nil, "failed to decode Ollama model list"
+  end
+  local models = {}
+  for _, model in ipairs(decoded.models) do
+    if type(model) == "table" and type(model.name) == "string" and model.name ~= "" then
+      models[#models + 1] = {
+        name = model.name,
+        size = model.size,
+        modified_at = model.modified_at,
+        digest = model.digest,
+      }
+    end
+  end
+  table.sort(models, function(a, b)
+    return a.name < b.name
+  end)
+  return models, nil
+end
+
+local function format_bytes(value)
+  value = tonumber(value)
+  if not value then
+    return "unknown"
+  end
+  local units = { "B", "KiB", "MiB", "GiB", "TiB" }
+  local index = 1
+  while value >= 1024 and index < #units do
+    value = value / 1024
+    index = index + 1
+  end
+  if index == 1 then
+    return string.format("%d %s", value, units[index])
+  end
+  return string.format("%.1f %s", value, units[index])
+end
+
+local function is_expected_provider_error(message)
+  message = tostring(message or ""):lower()
+  return message:find("context deadline exceeded", 1, true) ~= nil
+    or message:find("connection refused", 1, true) ~= nil
+    or message:find("connection reset", 1, true) ~= nil
+    or message:find("no route to host", 1, true) ~= nil
+    or message:find("ollama", 1, true) ~= nil and message:find("failed", 1, true) ~= nil
+end
+
+local function cursor_is_comment_or_string(bufnr)
+  if not state.config.suppress_in_comments_strings then
+    return false
+  end
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
+  local row, col = cursor_position()
+  local syn_id = vim.fn.synID(row + 1, col + 1, 1)
+  local translated = vim.fn.synIDtrans(syn_id)
+  local name = (vim.fn.synIDattr(translated, "name") or ""):lower()
+  return name:find("comment", 1, true) ~= nil or name:find("string", 1, true) ~= nil
+end
+
+local function open_path(path)
+  if not path or path == "" then
+    vim.notify("inliner path is not available", vim.log.levels.WARN)
+    return false
+  end
+  vim.cmd.edit(vim.fn.fnameescape(path))
+  return true
+end
+
+local function latest_file(pattern)
+  local files = vim.fn.glob(pattern, false, true)
+  local latest = nil
+  local latest_mtime = -1
+  for _, path in ipairs(files) do
+    local stat = uv.fs_stat(path)
+    if stat and stat.mtime and stat.mtime.sec > latest_mtime then
+      latest = path
+      latest_mtime = stat.mtime.sec
+    end
+  end
+  return latest
+end
+
 local function next_state_id(bufnr, row, col)
   state.seq = state.seq + 1
   local id = tostring(state.seq)
@@ -99,6 +224,11 @@ local function send_state_update(bufnr, include_file, opts)
 
   local path = file_path(bufnr)
   if not path then
+    clear_suggestion(bufnr)
+    return
+  end
+
+  if cursor_is_comment_or_string(bufnr) then
     clear_suggestion(bufnr)
     return
   end
@@ -281,8 +411,14 @@ local function on_message(message)
   if message.kind == "response" then
     on_response(message)
   elseif message.kind == "error" then
+    state.last_core_error = message.message
+    if state.config.suppress_expected_provider_errors and is_expected_provider_error(message.message) then
+      clear_suggestion(vim.api.nvim_get_current_buf())
+      return
+    end
     vim.notify("inliner-core: " .. message.message, vim.log.levels.WARN)
   elseif message.kind == "health_response" then
+    state.last_health = message
     local health_kind = state.pending_health_kind or "manual"
     state.pending_health_kind = nil
 
@@ -505,6 +641,7 @@ end
 function M.setup(opts)
   stop_all_pending_updates()
   state.config = vim.tbl_deep_extend("force", defaults, opts or {})
+  state.selected_model = state.config.ollama_model
   state.auto_suggest_enabled = state.config.auto_suggest ~= false
   attach_autocmds()
   attach_keymaps()
@@ -530,6 +667,192 @@ function M.toggle()
   end
 end
 
+function M.debug_dir()
+  return debug_dir()
+end
+
+function M.open_debug_dir()
+  vim.fn.mkdir(debug_dir(), "p")
+  return open_path(debug_dir())
+end
+
+function M.open_timing_log()
+  return open_path(vim.fs.joinpath(debug_dir(), "completion-timings.log"))
+end
+
+function M.open_telemetry_log()
+  return open_path(vim.fs.joinpath(debug_dir(), "request-lifecycle.jsonl"))
+end
+
+function M.open_latest_prompt()
+  local path = latest_file(vim.fs.joinpath(debug_dir(), "prompts", "*.prompt.txt"))
+  if not path then
+    vim.notify("no inliner prompt logs found in " .. vim.fs.joinpath(debug_dir(), "prompts"), vim.log.levels.WARN)
+    return false
+  end
+  return open_path(path)
+end
+
+function M.toggle_debug()
+  state.config.debug_verbose = not state.config.debug_verbose
+  local status = state.config.debug_verbose and "enabled" or "disabled"
+  local suffix = ""
+  if state.client and state.client:is_running() then
+    suffix = "; restart inliner-core for this to affect prompt/timing logs"
+  end
+  vim.notify("inliner debug logging " .. status .. suffix, vim.log.levels.INFO)
+  return state.config.debug_verbose
+end
+
+function M.status()
+  return {
+    running = state.client ~= nil and state.client:is_running(),
+    auto_suggest_enabled = state.auto_suggest_enabled,
+    debug_verbose = state.config.debug_verbose == true,
+    debug_dir = debug_dir(),
+    ollama_base_url = ollama_base_url(),
+    selected_model = selected_model(),
+    last_core_error = state.last_core_error,
+    last_health = state.last_health,
+    suggestions = vim.tbl_count(state.suggestion_by_buf),
+    pending = vim.tbl_count(state.pending_by_buf),
+  }
+end
+
+function M.debug_state()
+  return M.status()
+end
+
+function M.switch_model(model)
+  model = vim.trim(model or "")
+  if model == "" then
+    vim.notify("model name is required", vim.log.levels.WARN)
+    return false
+  end
+
+  state.selected_model = model
+  state.config.ollama_model = model
+  local was_running = state.client ~= nil and state.client:is_running()
+  if was_running then
+    M.stop()
+    M.start()
+  end
+  local suffix = was_running and " and restarted inliner-core" or ""
+  vim.notify("inliner Ollama model set to " .. model .. suffix, vim.log.levels.INFO)
+  return true
+end
+
+function M.list_models(callback)
+  local url = ollama_base_url() .. "/api/tags"
+  local handle = vim.system({ "curl", "-fsS", url }, { text = true }, function(result)
+    local models, err = parse_ollama_models(result.stdout)
+    vim.schedule(function()
+      if result.code ~= 0 then
+        local message = vim.trim(result.stderr or "")
+        if message == "" then
+          message = "curl exited with code " .. tostring(result.code)
+        end
+        if callback then
+          callback(nil, message)
+        else
+          vim.notify("failed to list Ollama models: " .. message, vim.log.levels.WARN)
+        end
+        return
+      end
+      if err then
+        if callback then
+          callback(nil, err)
+        else
+          vim.notify(err, vim.log.levels.WARN)
+        end
+        return
+      end
+      state.cached_models = models
+      if callback then
+        callback(models, nil)
+        return
+      end
+      if #models == 0 then
+        vim.notify("no Ollama models found at " .. ollama_base_url(), vim.log.levels.INFO)
+        return
+      end
+      local lines = { "Ollama models at " .. ollama_base_url() .. ":" }
+      for _, model in ipairs(models) do
+        local marker = model.name == selected_model() and "* " or "- "
+        lines[#lines + 1] = marker .. model.name .. " (" .. format_bytes(model.size) .. ")"
+      end
+      vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+    end)
+  end)
+  return handle ~= nil
+end
+
+function M.pick_model()
+  return M.list_models(function(models, err)
+    if err then
+      vim.notify("failed to list Ollama models: " .. err, vim.log.levels.WARN)
+      return
+    end
+    if not models or #models == 0 then
+      vim.notify("no Ollama models found at " .. ollama_base_url(), vim.log.levels.INFO)
+      return
+    end
+    state.cached_models = models
+    vim.ui.select(models, {
+      prompt = "Inliner Ollama model",
+      format_item = function(model)
+        return model.name .. " (" .. format_bytes(model.size) .. ")"
+      end,
+    }, function(choice)
+      if choice then
+        M.switch_model(choice.name)
+      end
+    end)
+  end)
+end
+
+function M.model_info()
+  local health = state.last_health or {}
+  local lines = {
+    "inliner model/resource information",
+    "provider: " .. tostring(health.provider or ""),
+    "provider status: " .. tostring(health.providerStatus or ""),
+    "provider reachable: " .. tostring(health.providerReachable),
+    "provider error: " .. tostring(health.providerError or ""),
+    "selected model: " .. tostring(selected_model() or health.ollamaModel or ""),
+    "health model: " .. tostring(health.ollamaModel or ""),
+    "base URL: " .. tostring(health.ollamaBaseUrl or ollama_base_url()),
+    "temperature: " .. tostring(health.ollamaTemperature or ""),
+    "num predict: " .. tostring(health.ollamaNumPredict or ""),
+    "timeout: " .. tostring(health.requestTimeout or ""),
+    "window bytes: " .. tostring(health.windowBytes or ""),
+    "open documents: " .. tostring(health.openDocuments or ""),
+    "in-flight requests: " .. tostring(health.inFlightRequests or ""),
+  }
+  vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+  return lines
+end
+
+function M.test_completion()
+  return M.complete()
+end
+
+function M._complete_model_for_command(arglead)
+  local matches = {}
+  arglead = arglead or ""
+  for _, model in ipairs(state.cached_models or {}) do
+    if model.name:sub(1, #arglead) == arglead then
+      matches[#matches + 1] = model.name
+    end
+  end
+  local current = selected_model()
+  if current and current:sub(1, #arglead) == arglead then
+    matches[#matches + 1] = current
+  end
+  table.sort(matches)
+  return matches
+end
+
 function M.start()
   if state.client and state.client:is_running() then
     return
@@ -543,6 +866,7 @@ function M.start()
   state.client = client.new({
     cmd = cmd,
     cwd = cwd,
+    env = core_env(),
     on_message = on_message,
   })
 
@@ -601,6 +925,18 @@ end
 function M._set_suggestion_for_test(bufnr, suggestion)
   state.suggestion_by_buf[bufnr] = suggestion
   ghost_text.show(bufnr, suggestion.text, suggestion.row, suggestion.col)
+end
+
+function M._cursor_is_comment_or_string_for_test(bufnr)
+  return cursor_is_comment_or_string(bufnr)
+end
+
+function M._parse_ollama_models_for_test(payload)
+  return parse_ollama_models(payload)
+end
+
+function M._format_bytes_for_test(value)
+  return format_bytes(value)
 end
 
 M.setup()

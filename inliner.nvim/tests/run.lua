@@ -12,6 +12,8 @@ local tests = {
   "insert_mapping_test.lua",
   "ghost_text_test.lua",
   "plugin_test.lua",
+  "context_suppression_test.lua",
+  "commands_test.lua",
 }
 
 local failures = {}

@@ -9,6 +9,7 @@ function M.new(opts)
   return setmetatable({
     cmd = opts.cmd,
     cwd = opts.cwd,
+    env = opts.env,
     on_message = opts.on_message,
     job_id = nil,
     stdout_buffer = "",
@@ -26,6 +27,7 @@ function Client:start()
 
   self.job_id = vim.fn.jobstart(self.cmd, {
     cwd = self.cwd,
+    env = self.env,
     stdin = "pipe",
     stdout_buffered = false,
     stderr_buffered = false,
