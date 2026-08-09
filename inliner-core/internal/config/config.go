@@ -31,6 +31,7 @@ const (
 	EnvPromptMaxFunctions        = "INLINER_PROMPT_MAX_FUNCTIONS"
 	EnvDebugVerbose              = "INLINER_DEBUG_VERBOSE"
 	EnvDebugDir                  = "INLINER_DEBUG_DIR"
+	EnvTelemetryEnabled          = "INLINER_TELEMETRY_ENABLED"
 	EnvRequestTimeout            = "INLINER_REQUEST_TIMEOUT"
 	EnvWindowBytes               = "INLINER_WINDOW_BYTES"
 )
@@ -52,6 +53,7 @@ type Config struct {
 	PromptMaxFunctions        int
 	DebugVerbose              bool
 	DebugDir                  string
+	TelemetryEnabled          bool
 	RequestTimeout            time.Duration
 	WindowBytes               int
 }
@@ -196,6 +198,14 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("parse %s: %w", EnvDebugVerbose, err)
 		}
 		cfg.DebugVerbose = parsed
+	}
+
+	if value, ok := lookup(EnvTelemetryEnabled); ok {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("parse %s: %w", EnvTelemetryEnabled, err)
+		}
+		cfg.TelemetryEnabled = parsed
 	}
 
 	if value, ok := lookup(EnvDebugDir); ok {

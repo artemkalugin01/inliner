@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/aokalugin/inliner/inliner-core/internal/edithistory"
 	"github.com/aokalugin/inliner/inliner-core/internal/gocontext"
 	"github.com/aokalugin/inliner/inliner-core/internal/protocol"
+	"github.com/aokalugin/inliner/inliner-core/internal/telemetry"
 	"github.com/aokalugin/inliner/inliner-core/internal/version"
 )
 
@@ -26,6 +28,7 @@ type Session struct {
 	documents *document.Store
 	history   edithistory.Provider
 	collector *gocontext.Collector
+	telemetry telemetry.Recorder
 	options   Options
 
 	mu        sync.Mutex
@@ -43,8 +46,29 @@ type Options struct {
 	OllamaModel       string
 	OllamaTemperature float64
 	OllamaNumPredict  int
+	TelemetryEnabled  bool
+	TelemetryDir      string
+	TelemetryRecorder telemetry.Recorder
 	RequestTimeout    time.Duration
 	WindowBytes       int
+}
+
+type lifecycle struct {
+	receivedAt          time.Time
+	startedAt           time.Time
+	contextCollection   time.Duration
+	recentEditSelection time.Duration
+	requestBuild        time.Duration
+	provider            time.Duration
+	responseWrite       time.Duration
+	completionItems     int
+	completionTextBytes int
+	cached              bool
+	suppressed          bool
+	stale               bool
+	cancelled           bool
+	status              string
+	err                 string
 }
 
 func New(transport *protocol.Transport, complete *completion.Service, options ...Options) *Session {
@@ -56,12 +80,23 @@ func New(transport *protocol.Transport, complete *completion.Service, options ..
 		resolved.WindowBytes = document.DefaultWindowBytes
 	}
 
+	recorder := resolved.TelemetryRecorder
+	if recorder == nil {
+		recorder = telemetry.NoopRecorder{}
+		if resolved.TelemetryEnabled {
+			if created, err := telemetry.NewAsyncRecorder(resolved.TelemetryDir); err == nil {
+				recorder = created
+			}
+		}
+	}
+
 	return &Session{
 		transport: transport,
 		complete:  complete,
 		documents: document.NewStore(),
 		history:   edithistory.NewMemoryProvider(edithistory.MemoryOptions{}),
 		collector: gocontext.NewCollector(),
+		telemetry: recorder,
 		options:   resolved,
 		latest:    make(map[string]string),
 		cancels:   make(map[string]context.CancelFunc),
@@ -72,8 +107,10 @@ func New(transport *protocol.Transport, complete *completion.Service, options ..
 }
 
 func (s *Session) Run(ctx context.Context) error {
+	defer s.telemetry.Close()
 	for {
 		msg, err := s.transport.Read()
+		receivedAt := time.Now()
 		if errors.Is(err, io.EOF) {
 			s.cancelAll()
 			s.workers.Wait()
@@ -86,7 +123,7 @@ func (s *Session) Run(ctx context.Context) error {
 			continue
 		}
 
-		if err := s.handle(ctx, msg); err != nil {
+		if err := s.handle(ctx, msg, receivedAt); err != nil {
 			if errors.Is(err, io.EOF) {
 				s.cancelAll()
 				s.workers.Wait()
@@ -99,7 +136,7 @@ func (s *Session) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Session) handle(ctx context.Context, msg protocol.RawMessage) error {
+func (s *Session) handle(ctx context.Context, msg protocol.RawMessage, receivedAt time.Time) error {
 	switch msg.Kind {
 	case "greeting":
 		var greeting protocol.Greeting
@@ -112,7 +149,7 @@ func (s *Session) handle(ctx context.Context, msg protocol.RawMessage) error {
 		if err := json.Unmarshal(msg.Raw, &update); err != nil {
 			return err
 		}
-		return s.handleStateUpdate(ctx, update)
+		return s.handleStateUpdate(ctx, update, receivedAt)
 	case "health_request":
 		var request protocol.HealthRequest
 		if err := json.Unmarshal(msg.Raw, &request); err != nil {
@@ -201,7 +238,11 @@ func (s *Session) handleAcceptUpdate(update protocol.AcceptUpdate) error {
 	return nil
 }
 
-func (s *Session) handleStateUpdate(ctx context.Context, update protocol.StateUpdate) error {
+func (s *Session) handleStateUpdate(ctx context.Context, update protocol.StateUpdate, receivedAt ...time.Time) error {
+	received := time.Now()
+	if len(receivedAt) > 0 && !receivedAt[0].IsZero() {
+		received = receivedAt[0]
+	}
 	for _, item := range update.Updates {
 		switch item.Kind {
 		case "file_update":
@@ -212,7 +253,7 @@ func (s *Session) handleStateUpdate(ctx context.Context, update protocol.StateUp
 			s.documents.Set(item.Path, item.Content)
 			s.cancelPath(item.Path)
 		case "cursor_update":
-			if err := s.completeAtCursor(ctx, update.NewID, item.Path, item.Offset); err != nil {
+			if err := s.completeAtCursor(ctx, update.NewID, item.Path, item.Offset, received); err != nil {
 				return err
 			}
 		default:
@@ -223,7 +264,9 @@ func (s *Session) handleStateUpdate(ctx context.Context, update protocol.StateUp
 	return nil
 }
 
-func (s *Session) completeAtCursor(ctx context.Context, stateID string, path string, offset int) error {
+func (s *Session) completeAtCursor(ctx context.Context, stateID string, path string, offset int, receivedAt time.Time) error {
+	life := lifecycle{receivedAt: receivedAt, startedAt: time.Now(), status: "started"}
+	requestStarted := time.Now()
 	content, ok := s.documents.Get(path)
 	if !ok {
 		return fmt.Errorf("no document content for %q", path)
@@ -238,21 +281,31 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 		Language: "go",
 		Prefix:   window.Prefix,
 		Suffix:   window.Suffix,
+		Timings:  &completion.RequestTimings{},
 	}
+	contextStarted := time.Now()
 	if pkg, ok := s.collectPackageContext(path, content, offset); ok {
 		request.Package = &pkg
 	}
+	life.contextCollection = time.Since(contextStarted)
+	recentStarted := time.Now()
 	request.RecentEdits = s.recentEdits(path, cursorLine, request)
+	life.recentEditSelection = time.Since(recentStarted)
+	life.requestBuild = time.Since(requestStarted)
 	s.rememberRequest(request)
 
 	if text, ok := s.cache.Lookup(request); ok {
 		s.replaceActiveRequest(path, stateID, nil)
 		if s.isLatest(path, stateID) {
+			life.cached = true
 			if s.dismissed.IsDismissed(request, text) {
-				return s.sendCompletionResponse(stateID, []completion.Item{{Kind: "end"}})
+				life.suppressed = true
+				return s.sendCompletionResponseWithTelemetry(request, []completion.Item{{Kind: "end"}}, life, nil)
 			}
-			return s.sendCompletionResponse(stateID, []completion.Item{{Kind: "text", Text: text}, {Kind: "end"}})
+			return s.sendCompletionResponseWithTelemetry(request, []completion.Item{{Kind: "text", Text: text}, {Kind: "end"}}, life, nil)
 		}
+		life.stale = true
+		s.recordTelemetry(request, life)
 		return nil
 	}
 
@@ -260,7 +313,7 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 	s.replaceActiveRequest(path, stateID, cancel)
 
 	s.workers.Add(1)
-	go s.runCompletion(completionCtx, request)
+	go s.runCompletion(completionCtx, request, life)
 
 	return nil
 }
@@ -336,26 +389,46 @@ func exists(path string) bool {
 	return err == nil
 }
 
-func (s *Session) runCompletion(ctx context.Context, request completion.Request) {
+func (s *Session) runCompletion(ctx context.Context, request completion.Request, life lifecycle) {
 	defer s.workers.Done()
 
+	providerStarted := time.Now()
 	response, err := s.complete.Complete(ctx, request)
+	life.provider = time.Since(providerStarted)
 	if err != nil {
 		if ctx.Err() != nil || !s.isLatest(request.FilePath, request.StateID) {
+			life.cancelled = ctx.Err() != nil
+			life.stale = ctx.Err() == nil
+			life.status = "cancelled"
+			if life.stale {
+				life.status = "stale"
+			}
+			s.recordTelemetry(request, life)
 			return
 		}
+		life.status = "error"
+		life.err = err.Error()
+		s.recordTelemetry(request, life)
 		_ = s.sendError(err.Error())
 		return
 	}
 	if ctx.Err() != nil || !s.isLatest(request.FilePath, request.StateID) {
+		life.cancelled = ctx.Err() != nil
+		life.stale = ctx.Err() == nil
+		life.status = "cancelled"
+		if life.stale {
+			life.status = "stale"
+		}
+		s.recordTelemetry(request, life)
 		return
 	}
 	if s.shouldSuppressResponse(request, response.Items) {
-		_ = s.sendCompletionResponse(request.StateID, []completion.Item{{Kind: "end"}})
+		life.suppressed = true
+		_ = s.sendCompletionResponseWithTelemetry(request, []completion.Item{{Kind: "end"}}, life, nil)
 		return
 	}
 
-	_ = s.sendCompletionResponse(request.StateID, response.Items)
+	_ = s.sendCompletionResponseWithTelemetry(request, response.Items, life, nil)
 }
 
 func (s *Session) shouldSuppressResponse(request completion.Request, items []completion.Item) bool {
@@ -384,6 +457,92 @@ func (s *Session) sendCompletionResponse(stateID string, completionItems []compl
 	}
 
 	return s.transport.Send(protocol.Response{Kind: "response", StateID: stateID, Items: items})
+}
+
+func (s *Session) sendCompletionResponseWithTelemetry(request completion.Request, items []completion.Item, life lifecycle, err error) error {
+	started := time.Now()
+	sendErr := s.sendCompletionResponse(request.StateID, items)
+	life.responseWrite = time.Since(started)
+	if err != nil {
+		life.err = err.Error()
+	}
+	if sendErr != nil {
+		life.err = sendErr.Error()
+		life.status = "error"
+	}
+	life.completionItems = len(items)
+	life.completionTextBytes = len(completionText(items))
+	s.recordTelemetry(request, life)
+	return sendErr
+}
+
+func (s *Session) recordTelemetry(request completion.Request, life lifecycle) {
+	if life.status == "" || life.status == "started" {
+		life.status = "ok"
+	}
+	if life.startedAt.IsZero() {
+		life.startedAt = time.Now()
+	}
+	if life.receivedAt.IsZero() {
+		life.receivedAt = life.startedAt
+	}
+
+	event := telemetry.Event{
+		Kind:                  "completion_request",
+		Timestamp:             time.Now().UTC().Format(time.RFC3339Nano),
+		StateID:               request.StateID,
+		Language:              request.Language,
+		Provider:              s.options.Provider,
+		Model:                 s.options.OllamaModel,
+		Status:                life.status,
+		Error:                 truncateError(life.err),
+		ProjectHash:           hashString(detectProjectRoot(request.FilePath)),
+		FileHash:              hashString(request.FilePath),
+		PrefixBytes:           len(request.Prefix),
+		SuffixBytes:           len(request.Suffix),
+		RecentEdits:           len(request.RecentEdits),
+		CompletionItems:       life.completionItems,
+		CompletionTextBytes:   life.completionTextBytes,
+		Cached:                life.cached,
+		Suppressed:            life.suppressed,
+		Stale:                 life.stale,
+		Cancelled:             life.cancelled,
+		CoreReceiveToStartMs:  life.startedAt.Sub(life.receivedAt).Milliseconds(),
+		ContextCollectionMs:   life.contextCollection.Milliseconds(),
+		RecentEditSelectionMs: life.recentEditSelection.Milliseconds(),
+		RequestBuildMs:        life.requestBuild.Milliseconds(),
+		PromptBuildMs:         request.Timings.PromptBuildMs(),
+		ProviderMs:            life.provider.Milliseconds(),
+		ResponseWriteMs:       life.responseWrite.Milliseconds(),
+		TotalCoreMs:           time.Since(life.receivedAt).Milliseconds(),
+	}
+	if request.Package != nil {
+		event.PackageFiles = len(request.Package.Files)
+		event.PackageImports = len(request.Package.Imports)
+		event.PackageValues = len(request.Package.Values)
+		event.PackageTypes = len(request.Package.Types)
+		event.PackageInterfaces = len(request.Package.Interfaces)
+		event.PackageFunctions = len(request.Package.Functions)
+		event.VisibleIdentifiers = len(request.Package.Visible)
+		event.SiblingMethods = len(request.Package.Siblings)
+	}
+	s.telemetry.Record(event)
+}
+
+func truncateError(value string) string {
+	const maxErrorBytes = 300
+	if len(value) <= maxErrorBytes {
+		return value
+	}
+	return value[:maxErrorBytes]
+}
+
+func hashString(value string) string {
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum[:])
 }
 
 func (s *Session) sendError(message string) error {

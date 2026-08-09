@@ -13,6 +13,7 @@ import (
 
 	"github.com/aokalugin/inliner/inliner-core/internal/completion"
 	"github.com/aokalugin/inliner/inliner-core/internal/protocol"
+	"github.com/aokalugin/inliner/inliner-core/internal/telemetry"
 )
 
 type recordingProvider struct {
@@ -21,6 +22,25 @@ type recordingProvider struct {
 	response    completion.Response
 	err         error
 	diagnostics completion.ProviderDiagnostics
+}
+
+type recordingTelemetry struct {
+	mu     sync.Mutex
+	events []telemetry.Event
+}
+
+func (r *recordingTelemetry) Record(event telemetry.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *recordingTelemetry) Close() {}
+
+func (r *recordingTelemetry) Events() []telemetry.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]telemetry.Event(nil), r.events...)
 }
 
 func (p *recordingProvider) Complete(ctx context.Context, request completion.Request) (completion.Response, error) {
@@ -325,6 +345,49 @@ func TestSessionIncludesRecentEditsInCompletionRequest(t *testing.T) {
 	}
 	if !strings.Contains(requests[0].RecentEdits[0].After, "repo.EXPECT().Find().Return(nil)") {
 		t.Fatalf("RecentEdits[0].After = %q, want mock call", requests[0].RecentEdits[0].After)
+	}
+}
+
+func TestSessionRecordsCompletionTelemetry(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	currentFile := filepath.Join(root, "main.go")
+	content := "package main\n\nconst defaultLimit = 10\n\nfunc main() {\n\tdefaultLimit\n}\n"
+	if err := os.WriteFile(currentFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile main.go: %v", err)
+	}
+
+	recorder := &recordingTelemetry{}
+	provider := &recordingProvider{response: completion.Response{Items: []completion.Item{{Kind: "text", Text: "fmt.Println(defaultLimit)"}, {Kind: "end"}}}}
+	output := runStateUpdate(t, provider, protocol.StateUpdate{NewID: "telemetry-1", Updates: []protocol.Update{
+		{Kind: "file_update", Path: currentFile, Content: content},
+		{Kind: "cursor_update", Path: currentFile, Offset: strings.Index(content, "\tdefaultLimit") + 1},
+	}}, Options{Provider: "fake", OllamaModel: "test-model", TelemetryRecorder: recorder})
+
+	if len(decodeOutput(t, output)) == 0 {
+		t.Fatal("output is empty, want completion response")
+	}
+	events := recorder.Events()
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.Kind != "completion_request" || event.StateID != "telemetry-1" || event.Status != "ok" {
+		t.Fatalf("event = %+v, want ok completion_request", event)
+	}
+	if event.Provider != "fake" || event.Model != "test-model" {
+		t.Fatalf("provider/model = %q/%q", event.Provider, event.Model)
+	}
+	if event.FileHash == "" || event.ProjectHash == "" || strings.Contains(event.FileHash, currentFile) {
+		t.Fatalf("hashes = file:%q project:%q", event.FileHash, event.ProjectHash)
+	}
+	if event.PackageValues != 1 || event.PackageFunctions != 1 || event.CompletionTextBytes != len("fmt.Println(defaultLimit)") {
+		t.Fatalf("event counts = %+v", event)
+	}
+	if event.PrefixBytes <= 0 || event.SuffixBytes <= 0 {
+		t.Fatalf("prefix/suffix bytes = %d/%d", event.PrefixBytes, event.SuffixBytes)
 	}
 }
 

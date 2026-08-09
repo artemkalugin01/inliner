@@ -31,6 +31,8 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		OllamaModel:       cfg.OllamaModel,
 		OllamaTemperature: cfg.OllamaTemperature,
 		OllamaNumPredict:  cfg.OllamaNumPredict,
+		TelemetryEnabled:  cfg.TelemetryEnabled,
+		TelemetryDir:      cfg.DebugDir,
 		RequestTimeout:    cfg.RequestTimeout,
 		WindowBytes:       cfg.WindowBytes,
 	})

@@ -103,7 +103,9 @@ func (p *Provider) Complete(ctx context.Context, request completion.Request) (co
 		return completion.Response{Items: []completion.Item{{Kind: "end"}}}, nil
 	}
 
+	promptStarted := time.Now()
 	promptText := p.prompt.Build(request)
+	request.Timings.SetPromptBuild(time.Since(promptStarted))
 	p.writeDebugPrompt(request, promptText)
 
 	body, err := json.Marshal(generateRequest{

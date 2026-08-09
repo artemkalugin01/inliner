@@ -34,6 +34,7 @@ func TestLoadOverridesFromEnv(t *testing.T) {
 		EnvPromptMaxSiblings:         "8",
 		EnvPromptMaxValues:           "9",
 		EnvPromptMaxFunctions:        "10",
+		EnvTelemetryEnabled:          "true",
 		EnvDebugVerbose:              "true",
 		EnvDebugDir:                  " /tmp/inliner-logs ",
 		EnvRequestTimeout:            "5s",
@@ -63,6 +64,9 @@ func TestLoadOverridesFromEnv(t *testing.T) {
 	}
 	if !cfg.DebugVerbose || cfg.DebugDir != "/tmp/inliner-logs" {
 		t.Fatalf("debug config = %+v, want verbose /tmp/inliner-logs", cfg)
+	}
+	if !cfg.TelemetryEnabled {
+		t.Fatal("TelemetryEnabled = false, want true")
 	}
 	if cfg.RequestTimeout != 5*time.Second {
 		t.Fatalf("RequestTimeout = %v, want 5s", cfg.RequestTimeout)
@@ -150,6 +154,13 @@ func TestLoadRejectsInvalidDebugVerbose(t *testing.T) {
 	_, err := Load(mapEnv(map[string]string{EnvDebugVerbose: "sometimes"}))
 	if err == nil || !strings.Contains(err.Error(), EnvDebugVerbose) {
 		t.Fatalf("error = %v, want %s validation error", err, EnvDebugVerbose)
+	}
+}
+
+func TestLoadRejectsInvalidTelemetryEnabled(t *testing.T) {
+	_, err := Load(mapEnv(map[string]string{EnvTelemetryEnabled: "sometimes"}))
+	if err == nil || !strings.Contains(err.Error(), EnvTelemetryEnabled) {
+		t.Fatalf("error = %v, want %s validation error", err, EnvTelemetryEnabled)
 	}
 }
 

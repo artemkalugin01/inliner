@@ -2,6 +2,8 @@ package completion
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/aokalugin/inliner/inliner-core/internal/gocontext"
 )
@@ -14,6 +16,30 @@ type Request struct {
 	Suffix      string
 	Package     *gocontext.PackageContext
 	RecentEdits []RecentEdit
+	Timings     *RequestTimings
+}
+
+type RequestTimings struct {
+	mu            sync.Mutex
+	promptBuildMs int64
+}
+
+func (t *RequestTimings) SetPromptBuild(duration time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.promptBuildMs = duration.Milliseconds()
+	t.mu.Unlock()
+}
+
+func (t *RequestTimings) PromptBuildMs() int64 {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.promptBuildMs
 }
 
 type RecentEdit struct {
