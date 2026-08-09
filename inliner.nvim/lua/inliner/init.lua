@@ -457,7 +457,12 @@ local function attach_keymaps()
 
   if state.config.accept_key ~= false and state.config.accept_key ~= nil then
     vim.keymap.set("i", state.config.accept_key, function()
-      if M.accept() then
+      local bufnr = vim.api.nvim_get_current_buf()
+      local suggestion = state.suggestion_by_buf[bufnr]
+      if suggestion and suggestion.text ~= "" then
+        vim.schedule(function()
+          M.accept()
+        end)
         return ""
       end
       return vim.api.nvim_replace_termcodes(state.config.accept_key, true, false, true)
@@ -467,7 +472,12 @@ local function attach_keymaps()
 
   if state.config.accept_word_key ~= false and state.config.accept_word_key ~= nil then
     vim.keymap.set("i", state.config.accept_word_key, function()
-      if M.accept_word() then
+      local bufnr = vim.api.nvim_get_current_buf()
+      local suggestion = state.suggestion_by_buf[bufnr]
+      if suggestion and suggestion.text ~= "" then
+        vim.schedule(function()
+          M.accept_word()
+        end)
         return ""
       end
       return vim.api.nvim_replace_termcodes(state.config.accept_word_key, true, false, true)

@@ -62,18 +62,18 @@ func TestOnly(t *testing.T) {}
 	if ctx.PackageName != "service" {
 		t.Fatalf("PackageName = %q, want service", ctx.PackageName)
 	}
-	if got := fileRelativePaths(ctx.Files); !reflect.DeepEqual(got, []string{"internal/service/server.go", "internal/service/service.go"}) {
+	if got := fileRelativePaths(ctx.Files); !reflect.DeepEqual(got, []string{"internal/service/service.go", "internal/service/server.go"}) {
 		t.Fatalf("files = %#v", got)
 	}
 	if got := functionSignatures(ctx.Functions); !reflect.DeepEqual(got, []string{
-		"(*Server) HandleUser(id string) error",
-		"(Server) Name() string",
 		"NewStore(path string) (Store, error)",
 		"helper(count int) bool",
+		"(*Server) HandleUser(id string) error",
+		"(Server) Name() string",
 	}) {
 		t.Fatalf("functions = %#v", got)
 	}
-	if got := typeNames(ctx.Types); !reflect.DeepEqual(got, []string{"Server:struct", "User:struct", "userID:alias"}) {
+	if got := typeNames(ctx.Types); !reflect.DeepEqual(got, []string{"User:struct", "userID:alias", "Server:struct"}) {
 		t.Fatalf("types = %#v", got)
 	}
 	if got := importSummaries(ctx.Imports); !reflect.DeepEqual(got, []string{
@@ -146,7 +146,7 @@ func UnsavedFunc(value string) error { return nil }
 		t.Fatalf("CollectWithOverlay returned error: %v", err)
 	}
 
-	if got := typeNames(ctx.Types); !reflect.DeepEqual(got, []string{"Other:struct", "Unsaved:struct"}) {
+	if got := typeNames(ctx.Types); !reflect.DeepEqual(got, []string{"Unsaved:struct", "Other:struct"}) {
 		t.Fatalf("types = %#v, want unsaved current file declarations plus other file", got)
 	}
 	if got := functionSignatures(ctx.Functions); !reflect.DeepEqual(got, []string{"UnsavedFunc(value string) error"}) {
@@ -352,6 +352,95 @@ func Handle() {
 
 	if got := visibleSummaries(ctx.Visible); !reflect.DeepEqual(got, []string{"after::local variable"}) {
 		t.Fatalf("visible identifiers = %#v", got)
+	}
+}
+
+func TestCollectorRanksPackageContextByRelevance(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "service")
+	mustMkdir(t, pkgDir)
+	currentFile := filepath.Join(pkgDir, "server.go")
+	content := `package service
+
+import (
+	"fmt"
+	alias "example.com/project/aliaspkg"
+)
+
+type Server struct{}
+
+func (s *Server) Handle() {
+	repo := &Repository{}
+	alias.Use(repo)
+	fmt.Println(repo)
+	return
+}
+`
+	writeFile(t, currentFile, content)
+	writeFile(t, filepath.Join(pkgDir, "repository.go"), `package service
+
+type Repository struct{}
+
+type Account struct{}
+
+func (s *Server) Shutdown() {}
+
+func (a *Account) Save() {}
+
+func BuildRepository() Repository { return Repository{} }
+`)
+
+	ctx, err := NewCollector().CollectWithOverlayAt(currentFile, root, content, strings.Index(content, "return"))
+	if err != nil {
+		t.Fatalf("CollectWithOverlayAt returned error: %v", err)
+	}
+
+	if got := functionSignatures(ctx.Functions); !reflect.DeepEqual(got, []string{
+		"(*Server) Handle()",
+		"(*Server) Shutdown()",
+		"BuildRepository() Repository",
+		"(*Account) Save()",
+	}) {
+		t.Fatalf("functions = %#v", got)
+	}
+	if got := functionSignatures(ctx.Siblings); !reflect.DeepEqual(got, []string{"(*Server) Shutdown()"}) {
+		t.Fatalf("siblings = %#v", got)
+	}
+	if got := typeNames(ctx.Types); !reflect.DeepEqual(got, []string{"Server:struct", "Repository:struct", "Account:struct"}) {
+		t.Fatalf("types = %#v", got)
+	}
+	if got := importSummaries(ctx.Imports); !reflect.DeepEqual(got, []string{
+		`alias "example.com/project/aliaspkg" service/server.go`,
+		` "fmt" service/server.go`,
+	}) {
+		t.Fatalf("imports = %#v", got)
+	}
+}
+
+func TestCollectorDoesNotCollectSiblingMethodsForPlainFunction(t *testing.T) {
+	root := t.TempDir()
+	pkgDir := filepath.Join(root, "service")
+	mustMkdir(t, pkgDir)
+	currentFile := filepath.Join(pkgDir, "service.go")
+	content := `package service
+
+type Server struct{}
+
+func Handle() {
+	return
+}
+
+func (s *Server) Shutdown() {}
+`
+	writeFile(t, currentFile, content)
+
+	ctx, err := NewCollector().CollectWithOverlayAt(currentFile, root, content, strings.Index(content, "return"))
+	if err != nil {
+		t.Fatalf("CollectWithOverlayAt returned error: %v", err)
+	}
+
+	if len(ctx.Siblings) != 0 {
+		t.Fatalf("siblings = %+v, want none", ctx.Siblings)
 	}
 }
 

@@ -31,6 +31,7 @@ func TestLoadOverridesFromEnv(t *testing.T) {
 		EnvPromptMaxInterfaces:       "5",
 		EnvPromptMaxInterfaceMethods: "6",
 		EnvPromptMaxVisible:          "7",
+		EnvPromptMaxSiblings:         "8",
 		EnvPromptMaxFunctions:        "9",
 		EnvDebugVerbose:              "true",
 		EnvDebugDir:                  " /tmp/inliner-logs ",
@@ -56,7 +57,7 @@ func TestLoadOverridesFromEnv(t *testing.T) {
 	if cfg.OllamaNumPredict != 256 {
 		t.Fatalf("OllamaNumPredict = %d, want 256", cfg.OllamaNumPredict)
 	}
-	if cfg.PromptMaxFiles != 3 || cfg.PromptMaxImports != 8 || cfg.PromptMaxTypes != 4 || cfg.PromptMaxInterfaces != 5 || cfg.PromptMaxInterfaceMethods != 6 || cfg.PromptMaxVisible != 7 || cfg.PromptMaxFunctions != 9 {
+	if cfg.PromptMaxFiles != 3 || cfg.PromptMaxImports != 8 || cfg.PromptMaxTypes != 4 || cfg.PromptMaxInterfaces != 5 || cfg.PromptMaxInterfaceMethods != 6 || cfg.PromptMaxVisible != 7 || cfg.PromptMaxSiblings != 8 || cfg.PromptMaxFunctions != 9 {
 		t.Fatalf("prompt budgets = %+v, want configured values", cfg)
 	}
 	if !cfg.DebugVerbose || cfg.DebugDir != "/tmp/inliner-logs" {

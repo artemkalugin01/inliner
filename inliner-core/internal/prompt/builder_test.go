@@ -38,6 +38,9 @@ func TestGoInlineBuilderIncludesPackageContext(t *testing.T) {
 				{Name: "id", Type: "string", Kind: "parameter"},
 				{Name: "user", Type: "User", Kind: "local variable"},
 			},
+			Siblings: []gocontext.Function{
+				{Signature: "(*Server) ValidateUser(id string) error"},
+			},
 			Imports: []gocontext.Import{
 				{Path: "context", RelativeFile: "internal/service/service.go"},
 				{Name: "alias", Path: "io", RelativeFile: "internal/service/service.go"},
@@ -64,6 +67,8 @@ func TestGoInlineBuilderIncludesPackageContext(t *testing.T) {
 		"s *Server receiver",
 		"id string parameter",
 		"user User local variable",
+		"Sibling methods for current receiver:",
+		"(*Server) ValidateUser(id string) error",
 		`"context" from internal/service/service.go`,
 		`alias "io" from internal/service/service.go`,
 		"User struct",
@@ -94,6 +99,7 @@ func TestGoInlineBuilderBudgetsPackageContext(t *testing.T) {
 		MaxInterfaces:       1,
 		MaxInterfaceMethods: 1,
 		MaxVisible:          1,
+		MaxSiblings:         1,
 		MaxFunctions:        1,
 	}.Build(completion.Request{Package: &gocontext.PackageContext{
 		PackageName: "service",
@@ -108,6 +114,10 @@ func TestGoInlineBuilderBudgetsPackageContext(t *testing.T) {
 		Visible: []gocontext.VisibleIdentifier{
 			{Name: "ctx", Type: "context.Context", Kind: "parameter"},
 			{Name: "err", Type: "error", Kind: "local variable"},
+		},
+		Siblings: []gocontext.Function{
+			{Signature: "A.Sibling()"},
+			{Signature: "B.Sibling()"},
 		},
 		Types: []gocontext.Type{
 			{Name: "A", Kind: "struct"},
@@ -127,6 +137,7 @@ func TestGoInlineBuilderBudgetsPackageContext(t *testing.T) {
 		"a.go",
 		`"context" from a.go`,
 		"ctx context.Context parameter",
+		"A.Sibling()",
 		"A struct",
 		"Reader",
 		"Read()",
@@ -137,6 +148,7 @@ func TestGoInlineBuilderBudgetsPackageContext(t *testing.T) {
 		"1 more interface methods omitted",
 		"1 more interfaces omitted",
 		"1 more visible identifiers omitted",
+		"1 more sibling methods omitted",
 		"1 more functions omitted",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -144,7 +156,7 @@ func TestGoInlineBuilderBudgetsPackageContext(t *testing.T) {
 		}
 	}
 
-	for _, omitted := range []string{`"fmt" from b.go`, "err error local variable", "B struct", "Writer", "Write()", "B()"} {
+	for _, omitted := range []string{`"fmt" from b.go`, "err error local variable", "B.Sibling()", "B struct", "Writer", "Write()", "B()"} {
 		if strings.Contains(prompt, omitted) {
 			t.Fatalf("prompt contains omitted item %q:\n%s", omitted, prompt)
 		}
@@ -171,6 +183,9 @@ func TestGoInlineBuilderUsesDefaultBudgetsForZeroValues(t *testing.T) {
 	}
 	if builder.MaxVisible != DefaultMaxVisible {
 		t.Fatalf("MaxVisible = %d, want %d", builder.MaxVisible, DefaultMaxVisible)
+	}
+	if builder.MaxSiblings != DefaultMaxSiblings {
+		t.Fatalf("MaxSiblings = %d, want %d", builder.MaxSiblings, DefaultMaxSiblings)
 	}
 	if builder.MaxFunctions != DefaultMaxFunctions {
 		t.Fatalf("MaxFunctions = %d, want %d", builder.MaxFunctions, DefaultMaxFunctions)

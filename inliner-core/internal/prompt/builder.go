@@ -19,6 +19,7 @@ const (
 	DefaultMaxInterfaces       = 40
 	DefaultMaxInterfaceMethods = 12
 	DefaultMaxVisible          = 80
+	DefaultMaxSiblings         = 40
 	DefaultMaxFunctions        = 120
 )
 
@@ -29,6 +30,7 @@ type GoInlineBuilder struct {
 	MaxInterfaces       int
 	MaxInterfaceMethods int
 	MaxVisible          int
+	MaxSiblings         int
 	MaxFunctions        int
 }
 
@@ -87,6 +89,9 @@ func (b GoInlineBuilder) withDefaults() GoInlineBuilder {
 	if b.MaxVisible <= 0 {
 		b.MaxVisible = DefaultMaxVisible
 	}
+	if b.MaxSiblings <= 0 {
+		b.MaxSiblings = DefaultMaxSiblings
+	}
 	if b.MaxFunctions <= 0 {
 		b.MaxFunctions = DefaultMaxFunctions
 	}
@@ -132,6 +137,16 @@ func writePackageContext(builder *strings.Builder, ctx gocontext.PackageContext,
 			builder.WriteString("\n")
 		}
 		writeOmitted(builder, len(ctx.Visible), budget.MaxVisible, "visible identifiers")
+	}
+
+	if len(ctx.Siblings) > 0 {
+		builder.WriteString("Sibling methods for current receiver:\n")
+		for _, fn := range ctx.Siblings[:min(len(ctx.Siblings), budget.MaxSiblings)] {
+			builder.WriteString("- ")
+			builder.WriteString(fn.Signature)
+			builder.WriteString("\n")
+		}
+		writeOmitted(builder, len(ctx.Siblings), budget.MaxSiblings, "sibling methods")
 	}
 
 	if len(ctx.Imports) > 0 {

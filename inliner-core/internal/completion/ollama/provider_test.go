@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -329,6 +330,9 @@ func TestProviderDebugLoggingWritesPromptAndTiming(t *testing.T) {
 	if len(prompts) != 1 {
 		t.Fatalf("len(prompts) = %d, want 1", len(prompts))
 	}
+	if matched := regexp.MustCompile(`\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.\d{3}_MSK\.prompt\.txt`).MatchString(filepath.Base(prompts[0])); !matched {
+		t.Fatalf("prompt filename = %q, want readable Moscow timestamp", filepath.Base(prompts[0]))
+	}
 	promptContent, err := os.ReadFile(prompts[0])
 	if err != nil {
 		t.Fatalf("ReadFile prompt: %v", err)
@@ -393,6 +397,8 @@ func TestSanitizeCompletion(t *testing.T) {
 		"`fmt.Println(name)`":             "fmt.Println(name)",
 		"go\nfmt.Println(name)":           "fmt.Println(name)",
 		"GOLANG\r\nfmt.Println(name)\r\n": "fmt.Println(name)",
+		"go":                              "",
+		"GOLANG":                          "",
 	}
 
 	for input, want := range tests {

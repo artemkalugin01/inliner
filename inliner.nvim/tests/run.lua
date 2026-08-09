@@ -9,6 +9,7 @@ local tests = {
   "version_test.lua",
   "client_test.lua",
   "accept_word_test.lua",
+  "insert_mapping_test.lua",
   "ghost_text_test.lua",
   "plugin_test.lua",
 }

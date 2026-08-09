@@ -26,6 +26,7 @@ const (
 	EnvPromptMaxInterfaces       = "INLINER_PROMPT_MAX_INTERFACES"
 	EnvPromptMaxInterfaceMethods = "INLINER_PROMPT_MAX_INTERFACE_METHODS"
 	EnvPromptMaxVisible          = "INLINER_PROMPT_MAX_VISIBLE"
+	EnvPromptMaxSiblings         = "INLINER_PROMPT_MAX_SIBLINGS"
 	EnvPromptMaxFunctions        = "INLINER_PROMPT_MAX_FUNCTIONS"
 	EnvDebugVerbose              = "INLINER_DEBUG_VERBOSE"
 	EnvDebugDir                  = "INLINER_DEBUG_DIR"
@@ -45,6 +46,7 @@ type Config struct {
 	PromptMaxInterfaces       int
 	PromptMaxInterfaceMethods int
 	PromptMaxVisible          int
+	PromptMaxSiblings         int
 	PromptMaxFunctions        int
 	DebugVerbose              bool
 	DebugDir                  string
@@ -65,6 +67,7 @@ func Default() Config {
 		PromptMaxInterfaces:       prompt.DefaultMaxInterfaces,
 		PromptMaxInterfaceMethods: prompt.DefaultMaxInterfaceMethods,
 		PromptMaxVisible:          prompt.DefaultMaxVisible,
+		PromptMaxSiblings:         prompt.DefaultMaxSiblings,
 		PromptMaxFunctions:        prompt.DefaultMaxFunctions,
 		DebugDir:                  filepath.Join(os.TempDir(), "inliner-debug"),
 		RequestTimeout:            3 * time.Second,
@@ -161,6 +164,13 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			return Config{}, err
 		}
 		cfg.PromptMaxVisible = parsed
+	}
+	if value, ok := lookup(EnvPromptMaxSiblings); ok {
+		parsed, err := parsePositiveInt(EnvPromptMaxSiblings, value)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.PromptMaxSiblings = parsed
 	}
 	if value, ok := lookup(EnvPromptMaxFunctions); ok {
 		parsed, err := parsePositiveInt(EnvPromptMaxFunctions, value)

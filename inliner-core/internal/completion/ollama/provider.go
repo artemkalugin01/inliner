@@ -196,12 +196,17 @@ func (p *Provider) writeDebugPrompt(request completion.Request, promptText strin
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".prompt.txt"
+	name := moscowTime(time.Now()).Format("2006-01-02_15-04-05.000_MSK") + ".prompt.txt"
 	content := "projectHash: " + projectHash(request.FilePath) + "\n" +
 		"model: " + p.model + " provider=ollama baseURL=" + p.baseURL + "\n" +
 		"file: " + request.FilePath + "\n" +
 		"state: " + request.StateID + "\n\n" + promptText
 	_ = os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
+}
+
+func moscowTime(t time.Time) time.Time {
+	location := time.FixedZone("MSK", 3*60*60)
+	return t.In(location)
 }
 
 func projectHash(filePath string) string {
@@ -272,6 +277,9 @@ func sanitizeCompletion(text string) string {
 			text = text[len(prefix):]
 			break
 		}
+	}
+	if strings.EqualFold(text, "go") || strings.EqualFold(text, "golang") {
+		return ""
 	}
 
 	return strings.TrimSpace(text)

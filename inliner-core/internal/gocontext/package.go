@@ -9,10 +9,13 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+var identifierPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
 
 type PackageContext struct {
 	PackageName string
@@ -20,6 +23,7 @@ type PackageContext struct {
 	Imports     []Import
 	Current     *Function
 	Visible     []VisibleIdentifier
+	Siblings    []Function
 	Functions   []Function
 	Types       []Type
 	Interfaces  []Interface
@@ -38,9 +42,11 @@ type Import struct {
 }
 
 type Function struct {
-	Name      string
-	Receiver  string
-	Signature string
+	Name         string
+	Receiver     string
+	Signature    string
+	File         string
+	RelativeFile string
 }
 
 type VisibleIdentifier struct {
@@ -50,13 +56,17 @@ type VisibleIdentifier struct {
 }
 
 type Type struct {
-	Name string
-	Kind string
+	Name         string
+	Kind         string
+	File         string
+	RelativeFile string
 }
 
 type Interface struct {
-	Name    string
-	Methods []string
+	Name         string
+	Methods      []string
+	File         string
+	RelativeFile string
 }
 
 type Collector struct{}
@@ -134,7 +144,7 @@ func (c *Collector) collect(currentFile string, projectRoot string, overlay *str
 		ctx.Current, ctx.Visible = currentFunctionContextAtOffset(set, overlayFile, offset)
 	}
 
-	sortPackageContext(&ctx)
+	sortPackageContext(&ctx, currentFile, cursorTokens(overlay, offset))
 	return ctx, nil
 }
 
@@ -220,10 +230,12 @@ func importsFromFile(set *token.FileSet, file *ast.File) []Import {
 }
 
 func functionFromDecl(set *token.FileSet, decl *ast.FuncDecl) Function {
+	position := set.Position(decl.Pos())
 	return Function{
 		Name:      decl.Name.Name,
 		Receiver:  receiverString(set, decl.Recv),
 		Signature: funcSignature(set, decl),
+		File:      position.Filename,
 	}
 }
 
@@ -454,11 +466,11 @@ func collectTypeDecl(set *token.FileSet, decl *ast.GenDecl, ctx *PackageContext)
 
 		switch typ := typeSpec.Type.(type) {
 		case *ast.StructType:
-			ctx.Types = append(ctx.Types, Type{Name: typeSpec.Name.Name, Kind: "struct"})
+			ctx.Types = append(ctx.Types, Type{Name: typeSpec.Name.Name, Kind: "struct", File: set.Position(typeSpec.Pos()).Filename})
 		case *ast.InterfaceType:
-			ctx.Interfaces = append(ctx.Interfaces, Interface{Name: typeSpec.Name.Name, Methods: interfaceMethods(set, typ)})
+			ctx.Interfaces = append(ctx.Interfaces, Interface{Name: typeSpec.Name.Name, Methods: interfaceMethods(set, typ), File: set.Position(typeSpec.Pos()).Filename})
 		default:
-			ctx.Types = append(ctx.Types, Type{Name: typeSpec.Name.Name, Kind: "alias"})
+			ctx.Types = append(ctx.Types, Type{Name: typeSpec.Name.Name, Kind: "alias", File: set.Position(typeSpec.Pos()).Filename})
 		}
 	}
 }
@@ -587,12 +599,42 @@ func relativePath(root string, path string) string {
 	return rel
 }
 
-func sortPackageContext(ctx *PackageContext) {
-	sort.Slice(ctx.Files, func(i, j int) bool { return ctx.Files[i].RelativePath < ctx.Files[j].RelativePath })
+func sortPackageContext(ctx *PackageContext, currentFile string, cursorTokens map[string]bool) {
+	currentFile = filepath.Clean(currentFile)
+	sort.SliceStable(ctx.Files, func(i, j int) bool {
+		if filepath.Clean(ctx.Files[i].Path) == currentFile && filepath.Clean(ctx.Files[j].Path) != currentFile {
+			return true
+		}
+		if filepath.Clean(ctx.Files[j].Path) == currentFile && filepath.Clean(ctx.Files[i].Path) != currentFile {
+			return false
+		}
+		return ctx.Files[i].RelativePath < ctx.Files[j].RelativePath
+	})
 	for i := range ctx.Imports {
 		ctx.Imports[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Imports[i].File)
 	}
-	sort.Slice(ctx.Imports, func(i, j int) bool {
+	for i := range ctx.Functions {
+		ctx.Functions[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Functions[i].File)
+	}
+	for i := range ctx.Types {
+		ctx.Types[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Types[i].File)
+	}
+	for i := range ctx.Interfaces {
+		ctx.Interfaces[i].RelativeFile = relativePathForKnownFiles(ctx.Files, ctx.Interfaces[i].File)
+	}
+
+	visibleTypes, visibleFunctions := visibleReferences(ctx.Visible)
+	currentReceiver := normalizedTypeName("")
+	if ctx.Current != nil {
+		currentReceiver = normalizedTypeName(ctx.Current.Receiver)
+	}
+
+	sort.SliceStable(ctx.Imports, func(i, j int) bool {
+		iScore := importScore(ctx.Imports[i], currentFile, cursorTokens)
+		jScore := importScore(ctx.Imports[j], currentFile, cursorTokens)
+		if iScore != jScore {
+			return iScore > jScore
+		}
 		if ctx.Imports[i].RelativeFile == ctx.Imports[j].RelativeFile {
 			if ctx.Imports[i].Path == ctx.Imports[j].Path {
 				return ctx.Imports[i].Name < ctx.Imports[j].Name
@@ -601,9 +643,179 @@ func sortPackageContext(ctx *PackageContext) {
 		}
 		return ctx.Imports[i].RelativeFile < ctx.Imports[j].RelativeFile
 	})
-	sort.Slice(ctx.Functions, func(i, j int) bool { return ctx.Functions[i].Signature < ctx.Functions[j].Signature })
-	sort.Slice(ctx.Types, func(i, j int) bool { return ctx.Types[i].Name < ctx.Types[j].Name })
-	sort.Slice(ctx.Interfaces, func(i, j int) bool { return ctx.Interfaces[i].Name < ctx.Interfaces[j].Name })
+	sort.SliceStable(ctx.Functions, func(i, j int) bool {
+		iScore := functionScore(ctx.Functions[i], currentFile, currentReceiver, visibleTypes, visibleFunctions, cursorTokens)
+		jScore := functionScore(ctx.Functions[j], currentFile, currentReceiver, visibleTypes, visibleFunctions, cursorTokens)
+		if iScore != jScore {
+			return iScore > jScore
+		}
+		return ctx.Functions[i].Signature < ctx.Functions[j].Signature
+	})
+	ctx.Siblings = siblingMethods(ctx.Functions, ctx.Current)
+	sort.SliceStable(ctx.Types, func(i, j int) bool {
+		iScore := typeScore(ctx.Types[i].Name, ctx.Types[i].File, currentFile, visibleTypes, cursorTokens)
+		jScore := typeScore(ctx.Types[j].Name, ctx.Types[j].File, currentFile, visibleTypes, cursorTokens)
+		if iScore != jScore {
+			return iScore > jScore
+		}
+		return ctx.Types[i].Name < ctx.Types[j].Name
+	})
+	sort.SliceStable(ctx.Interfaces, func(i, j int) bool {
+		iScore := typeScore(ctx.Interfaces[i].Name, ctx.Interfaces[i].File, currentFile, visibleTypes, cursorTokens)
+		jScore := typeScore(ctx.Interfaces[j].Name, ctx.Interfaces[j].File, currentFile, visibleTypes, cursorTokens)
+		if iScore != jScore {
+			return iScore > jScore
+		}
+		return ctx.Interfaces[i].Name < ctx.Interfaces[j].Name
+	})
+}
+
+func siblingMethods(functions []Function, current *Function) []Function {
+	if current == nil || current.Receiver == "" {
+		return nil
+	}
+	currentReceiver := normalizedTypeName(current.Receiver)
+	if currentReceiver == "" {
+		return nil
+	}
+
+	siblings := make([]Function, 0)
+	for _, fn := range functions {
+		if normalizedTypeName(fn.Receiver) != currentReceiver {
+			continue
+		}
+		if fn.Signature == current.Signature {
+			continue
+		}
+		siblings = append(siblings, fn)
+	}
+	return siblings
+}
+
+func importScore(imp Import, currentFile string, cursorTokens map[string]bool) int {
+	score := fileScore(imp.File, currentFile)
+	if cursorTokens[importPackageName(imp)] {
+		score += 300
+	}
+	return score
+}
+
+func functionScore(fn Function, currentFile string, currentReceiver string, visibleTypes map[string]bool, visibleFunctions map[string]bool, cursorTokens map[string]bool) int {
+	score := fileScore(fn.File, currentFile)
+	if receiver := normalizedTypeName(fn.Receiver); receiver != "" && receiver == currentReceiver {
+		score += 600
+	}
+	if visibleFunctions[fn.Name] || cursorTokens[fn.Name] {
+		score += 300
+	}
+	if visibleTypes[normalizedTypeName(fn.Receiver)] {
+		score += 250
+	}
+	for typ := range visibleTypes {
+		if typ != "" && strings.Contains(fn.Signature, typ) {
+			score += 100
+		}
+	}
+	return score
+}
+
+func typeScore(name string, file string, currentFile string, visibleTypes map[string]bool, cursorTokens map[string]bool) int {
+	score := fileScore(file, currentFile)
+	if visibleTypes[name] {
+		score += 400
+	}
+	if cursorTokens[name] {
+		score += 300
+	}
+	return score
+}
+
+func fileScore(file string, currentFile string) int {
+	if filepath.Clean(file) == filepath.Clean(currentFile) {
+		return 1000
+	}
+	return 0
+}
+
+func visibleReferences(identifiers []VisibleIdentifier) (map[string]bool, map[string]bool) {
+	types := map[string]bool{}
+	functions := map[string]bool{}
+	for _, identifier := range identifiers {
+		for _, token := range identifierPattern.FindAllString(identifier.Type, -1) {
+			if token == "result" || token == "of" {
+				continue
+			}
+			types[normalizedTypeName(token)] = true
+		}
+		if strings.HasPrefix(identifier.Type, "result of ") {
+			name := strings.TrimPrefix(identifier.Type, "result of ")
+			functions[lastIdentifier(name)] = true
+		}
+	}
+	return types, functions
+}
+
+func cursorTokens(overlay *string, offset int) map[string]bool {
+	tokens := map[string]bool{}
+	if overlay == nil || offset < 0 {
+		return tokens
+	}
+	content := *overlay
+	if offset > len(content) {
+		offset = len(content)
+	}
+	start := offset - 1000
+	if start < 0 {
+		start = 0
+	}
+	end := offset + 1000
+	if end > len(content) {
+		end = len(content)
+	}
+	for _, token := range identifierPattern.FindAllString(content[start:end], -1) {
+		tokens[token] = true
+	}
+	return tokens
+}
+
+func importPackageName(imp Import) string {
+	if imp.Name != "" && imp.Name != "_" && imp.Name != "." {
+		return imp.Name
+	}
+	base := pathBase(imp.Path)
+	base = strings.TrimSuffix(base, ".git")
+	return strings.ReplaceAll(base, "-", "_")
+}
+
+func pathBase(value string) string {
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		return ""
+	}
+	index := strings.LastIndex(value, "/")
+	if index < 0 {
+		return value
+	}
+	return value[index+1:]
+}
+
+func normalizedTypeName(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "*")
+	value = strings.TrimPrefix(value, "[]")
+	value = strings.TrimPrefix(value, "...")
+	if strings.HasPrefix(value, "map[") {
+		return value
+	}
+	return lastIdentifier(value)
+}
+
+func lastIdentifier(value string) string {
+	matches := identifierPattern.FindAllString(value, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[len(matches)-1]
 }
 
 func relativePathForKnownFiles(files []File, path string) string {
