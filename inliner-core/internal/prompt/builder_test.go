@@ -190,6 +190,54 @@ func TestGoInlineBuilderUsesDefaultBudgetsForZeroValues(t *testing.T) {
 	if builder.MaxFunctions != DefaultMaxFunctions {
 		t.Fatalf("MaxFunctions = %d, want %d", builder.MaxFunctions, DefaultMaxFunctions)
 	}
+	if builder.MaxRecentEdits != DefaultMaxRecentEdits {
+		t.Fatalf("MaxRecentEdits = %d, want %d", builder.MaxRecentEdits, DefaultMaxRecentEdits)
+	}
+}
+
+func TestGoInlineBuilderIncludesRecentEdits(t *testing.T) {
+	prompt := GoInlineBuilder{}.Build(completion.Request{
+		RecentEdits: []completion.RecentEdit{
+			{
+				RelativePath: "service_test.go",
+				StartLine:    10,
+				EndLine:      12,
+				Before:       "",
+				After:        "\trepo.EXPECT().Find().Return(nil)\n",
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"Recent similar edits:",
+		"service_test.go lines 10-12",
+		"+ \trepo.EXPECT().Find().Return(nil)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt does not contain %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "-\n") {
+		t.Fatalf("pure insert rendered an empty removed line:\n%s", prompt)
+	}
+}
+
+func TestGoInlineBuilderBudgetsRecentEdits(t *testing.T) {
+	prompt := GoInlineBuilder{MaxRecentEdits: 1}.Build(completion.Request{
+		RecentEdits: []completion.RecentEdit{
+			{RelativePath: "a.go", StartLine: 1, EndLine: 1, After: "first\n"},
+			{RelativePath: "b.go", StartLine: 2, EndLine: 2, After: "second\n"},
+		},
+	})
+
+	for _, want := range []string{"a.go lines 1-1", "+ first", "1 more recent edits omitted"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt does not contain %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "b.go") || strings.Contains(prompt, "second") {
+		t.Fatalf("prompt contains omitted edit:\n%s", prompt)
+	}
 }
 
 func TestGoInlineBuilderTrimsPackageImportPreambleWhenImportsAreSeparate(t *testing.T) {

@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/aokalugin/inliner/inliner-core/internal/completion"
 	"github.com/aokalugin/inliner/inliner-core/internal/document"
+	"github.com/aokalugin/inliner/inliner-core/internal/edithistory"
 	"github.com/aokalugin/inliner/inliner-core/internal/gocontext"
 	"github.com/aokalugin/inliner/inliner-core/internal/protocol"
 	"github.com/aokalugin/inliner/inliner-core/internal/version"
@@ -22,6 +24,7 @@ type Session struct {
 	transport *protocol.Transport
 	complete  *completion.Service
 	documents *document.Store
+	history   edithistory.Provider
 	collector *gocontext.Collector
 	options   Options
 
@@ -57,6 +60,7 @@ func New(transport *protocol.Transport, complete *completion.Service, options ..
 		transport: transport,
 		complete:  complete,
 		documents: document.NewStore(),
+		history:   edithistory.NewMemoryProvider(edithistory.MemoryOptions{}),
 		collector: gocontext.NewCollector(),
 		options:   resolved,
 		latest:    make(map[string]string),
@@ -201,6 +205,10 @@ func (s *Session) handleStateUpdate(ctx context.Context, update protocol.StateUp
 	for _, item := range update.Updates {
 		switch item.Kind {
 		case "file_update":
+			oldContent, hadOldContent := s.documents.Get(item.Path)
+			if hadOldContent {
+				s.history.ObserveFileUpdate(item.Path, oldContent, item.Content)
+			}
 			s.documents.Set(item.Path, item.Content)
 			s.cancelPath(item.Path)
 		case "cursor_update":
@@ -222,6 +230,8 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 	}
 
 	window := document.AroundCursor(content, offset, s.options.WindowBytes)
+	cursorLine := lineNumber(content, offset)
+	s.history.ObserveCursor(path, cursorLine)
 	request := completion.Request{
 		StateID:  stateID,
 		FilePath: path,
@@ -232,6 +242,7 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 	if pkg, ok := s.collectPackageContext(path, content, offset); ok {
 		request.Package = &pkg
 	}
+	request.RecentEdits = s.recentEdits(path, cursorLine, request)
 	s.rememberRequest(request)
 
 	if text, ok := s.cache.Lookup(request); ok {
@@ -252,6 +263,44 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 	go s.runCompletion(completionCtx, request)
 
 	return nil
+}
+
+func (s *Session) recentEdits(path string, cursorLine int, request completion.Request) []completion.RecentEdit {
+	projectRoot := detectProjectRoot(path)
+	var visible []string
+	currentFunction := ""
+	if request.Package != nil {
+		for _, identifier := range request.Package.Visible {
+			visible = append(visible, identifier.Name, identifier.Type)
+		}
+		if request.Package.Current != nil {
+			currentFunction = request.Package.Current.Signature
+		}
+	}
+	edits := s.history.Relevant(edithistory.Query{
+		FilePath:           path,
+		ProjectRoot:        projectRoot,
+		CursorLine:         cursorLine,
+		Prefix:             request.Prefix,
+		Suffix:             request.Suffix,
+		VisibleIdentifiers: visible,
+		CurrentFunction:    currentFunction,
+	})
+	result := make([]completion.RecentEdit, 0, len(edits))
+	for _, edit := range edits {
+		result = append(result, completion.RecentEdit{RelativePath: edit.RelativePath, StartLine: edit.StartLine, EndLine: edit.EndLine, Before: edit.Before, After: edit.After})
+	}
+	return result
+}
+
+func lineNumber(content string, offset int) int {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(content) {
+		offset = len(content)
+	}
+	return strings.Count(content[:offset], "\n") + 1
 }
 
 func (s *Session) collectPackageContext(path string, content string, offset int) (gocontext.PackageContext, bool) {

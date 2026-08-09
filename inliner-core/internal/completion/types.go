@@ -7,12 +7,21 @@ import (
 )
 
 type Request struct {
-	StateID  string
-	FilePath string
-	Language string
-	Prefix   string
-	Suffix   string
-	Package  *gocontext.PackageContext
+	StateID     string
+	FilePath    string
+	Language    string
+	Prefix      string
+	Suffix      string
+	Package     *gocontext.PackageContext
+	RecentEdits []RecentEdit
+}
+
+type RecentEdit struct {
+	RelativePath string
+	StartLine    int
+	EndLine      int
+	Before       string
+	After        string
 }
 
 type Response struct {

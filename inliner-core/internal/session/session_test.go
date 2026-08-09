@@ -291,6 +291,43 @@ func TestSessionPackageContextIncludesCurrentFunction(t *testing.T) {
 	}
 }
 
+func TestSessionIncludesRecentEditsInCompletionRequest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	currentFile := filepath.Join(root, "service_test.go")
+	initial := "package main\n\nfunc TestA(t *testing.T) {\n}\n\nfunc TestB(t *testing.T) {\n}\n"
+	updated := "package main\n\nfunc TestA(t *testing.T) {\n\trepo.EXPECT().Find().Return(nil)\n}\n\nfunc TestB(t *testing.T) {\n}\n"
+	if err := os.WriteFile(currentFile, []byte(initial), 0o644); err != nil {
+		t.Fatalf("WriteFile service_test.go: %v", err)
+	}
+
+	provider := &recordingProvider{response: completion.Response{Items: []completion.Item{{Kind: "end"}}}}
+	var output bytes.Buffer
+	transport := protocol.NewTransport(strings.NewReader(strings.Join([]string{
+		mustJSON(t, protocol.StateUpdate{Kind: "state_update", NewID: "1", Updates: []protocol.Update{{Kind: "file_update", Path: currentFile, Content: initial}}}),
+		mustJSON(t, protocol.StateUpdate{Kind: "state_update", NewID: "2", Updates: []protocol.Update{{Kind: "file_update", Path: currentFile, Content: updated}}}),
+		mustJSON(t, protocol.StateUpdate{Kind: "state_update", NewID: "3", Updates: []protocol.Update{{Kind: "cursor_update", Path: currentFile, Offset: strings.Index(updated, "func TestB") + len("func TestB(t *testing.T) {\n")}}}),
+		`{"kind":"shutdown"}`,
+	}, "\n")+"\n"), &output)
+	sess := New(transport, completion.NewService(provider))
+	if err := sess.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	requests := provider.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(requests))
+	}
+	if len(requests[0].RecentEdits) != 1 {
+		t.Fatalf("RecentEdits = %+v, want one edit", requests[0].RecentEdits)
+	}
+	if !strings.Contains(requests[0].RecentEdits[0].After, "repo.EXPECT().Find().Return(nil)") {
+		t.Fatalf("RecentEdits[0].After = %q, want mock call", requests[0].RecentEdits[0].After)
+	}
+}
+
 func TestSessionCursorUpdateWithoutFileSendsError(t *testing.T) {
 	provider := &recordingProvider{}
 	output := runSession(t, provider, strings.Join([]string{
@@ -676,6 +713,16 @@ func runStateUpdate(t *testing.T, provider completion.Provider, update protocol.
 	sess.workers.Wait()
 
 	return output.String()
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	return string(data)
 }
 
 func decodeOutput(t *testing.T, output string) []json.RawMessage {

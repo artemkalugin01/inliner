@@ -21,6 +21,7 @@ const (
 	DefaultMaxVisible          = 80
 	DefaultMaxSiblings         = 40
 	DefaultMaxFunctions        = 120
+	DefaultMaxRecentEdits      = 5
 )
 
 type GoInlineBuilder struct {
@@ -32,6 +33,7 @@ type GoInlineBuilder struct {
 	MaxVisible          int
 	MaxSiblings         int
 	MaxFunctions        int
+	MaxRecentEdits      int
 }
 
 func (b GoInlineBuilder) Build(request completion.Request) string {
@@ -51,6 +53,7 @@ If no useful completion exists, return an empty response.
 	if request.Package != nil {
 		writePackageContext(&builder, *request.Package, b)
 	}
+	writeRecentEdits(&builder, request.RecentEdits, b.MaxRecentEdits)
 
 	prefix := request.Prefix
 	if request.Package != nil && len(request.Package.Imports) > 0 {
@@ -95,7 +98,40 @@ func (b GoInlineBuilder) withDefaults() GoInlineBuilder {
 	if b.MaxFunctions <= 0 {
 		b.MaxFunctions = DefaultMaxFunctions
 	}
+	if b.MaxRecentEdits <= 0 {
+		b.MaxRecentEdits = DefaultMaxRecentEdits
+	}
 	return b
+}
+
+func writeRecentEdits(builder *strings.Builder, edits []completion.RecentEdit, maxEdits int) {
+	if len(edits) == 0 {
+		return
+	}
+	builder.WriteString("\nRecent similar edits:\n")
+	for _, edit := range edits[:min(len(edits), maxEdits)] {
+		builder.WriteString("- ")
+		builder.WriteString(edit.RelativePath)
+		builder.WriteString(" lines ")
+		builder.WriteString(fmt.Sprintf("%d-%d", edit.StartLine, edit.EndLine))
+		builder.WriteString(":\n")
+		builder.WriteString("```diff\n")
+		writeDiffLines(builder, "- ", edit.Before)
+		writeDiffLines(builder, "+ ", edit.After)
+		builder.WriteString("```\n")
+	}
+	writeOmitted(builder, len(edits), maxEdits, "recent edits")
+}
+
+func writeDiffLines(builder *strings.Builder, prefix string, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(value, "\n"), "\n") {
+		builder.WriteString(prefix)
+		builder.WriteString(line)
+		builder.WriteString("\n")
+	}
 }
 
 func writePackageContext(builder *strings.Builder, ctx gocontext.PackageContext, budget GoInlineBuilder) {

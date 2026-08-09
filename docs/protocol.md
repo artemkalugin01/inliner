@@ -1,12 +1,13 @@
 # Inliner Editor Protocol
 
-This document describes the current protocol between `inliner.nvim` and
-`inliner-core`. It is a contract for the two projects in this monorepo; it is not
-loaded by the application at runtime.
+This document describes the current protocol between editor clients and
+`inliner-core`. It is a contract for projects in this monorepo; it is not loaded
+by the application at runtime.
 
 ## Transport
 
-`inliner.nvim` starts `inliner-core stdio` as a long-running stdio process.
+Editor clients such as `inliner.nvim` and `inliner.vscode` start
+`inliner-core stdio` as a long-running stdio process.
 
 Other core commands:
 
@@ -58,6 +59,7 @@ Prompt context budget settings:
 - `INLINER_PROMPT_MAX_INTERFACES`: default `40`.
 - `INLINER_PROMPT_MAX_INTERFACE_METHODS`: default `12`.
 - `INLINER_PROMPT_MAX_VISIBLE`: default `80`.
+- `INLINER_PROMPT_MAX_SIBLINGS`: default `40`.
 - `INLINER_PROMPT_MAX_FUNCTIONS`: default `120`.
 
 Debug logging settings:
@@ -68,7 +70,7 @@ Debug logging settings:
 When verbose debug logging is enabled, Ollama requests write:
 
 - `completion-timings.log`: one line per model request with timestamp, model, state id, file, duration, status, and error.
-- `prompts/*.prompt.txt`: one prompt per file, named with a UTC timestamp. The first line is `projectHash`, a SHA-256 hash of the absolute project path for log correlation only. The second line contains Ollama model metadata. These metadata lines are not included in the prompt sent to the model.
+- `prompts/*.prompt.txt`: one prompt per file, named with a human-readable Moscow-time timestamp, for example `2026-08-02_14-30-45.123_MSK.prompt.txt`. The first line is `projectHash`, a SHA-256 hash of the absolute project path for log correlation only. The second line contains Ollama model metadata. These metadata lines are not included in the prompt sent to the model.
 
 Debug prompts contain source context and should be treated as sensitive project data.
 
