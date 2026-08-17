@@ -9,11 +9,34 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aokalugin/inliner/inliner-core/internal/completion"
+	"github.com/aokalugin/inliner/inliner-core/internal/diagnostics"
 )
+
+type recordingDiagnostics struct {
+	mu      sync.Mutex
+	verbose bool
+	events  []diagnostics.Event
+}
+
+func (r *recordingDiagnostics) Publish(event diagnostics.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *recordingDiagnostics) Verbose() bool { return r.verbose }
+func (r *recordingDiagnostics) Close()        {}
+
+func (r *recordingDiagnostics) Events() []diagnostics.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]diagnostics.Event(nil), r.events...)
+}
 
 func TestProviderCompleteSendsGenerateRequest(t *testing.T) {
 	var captured generateRequest
@@ -71,6 +94,67 @@ func TestProviderCompleteSendsGenerateRequest(t *testing.T) {
 	}
 	if response.Items[1].Kind != "end" {
 		t.Fatalf("second item = %+v, want end", response.Items[1])
+	}
+}
+
+func TestProviderPublishesPromptAndModelTimingDiagnostics(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"response":"ok"}`))
+	}))
+	defer server.Close()
+
+	recorder := &recordingDiagnostics{verbose: true}
+	provider, err := New(Options{
+		BaseURL:     server.URL,
+		Model:       "test-model",
+		Prompt:      staticPrompt{value: "diagnostic prompt"},
+		Diagnostics: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	timings := &completion.RequestTimings{}
+	timings.SetRequestBuild(4 * time.Millisecond)
+	_, err = provider.Complete(context.Background(), completion.Request{StateID: "42", Language: "go", Timings: timings})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	events := recorder.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want prompt and awaiting-model events", events)
+	}
+	if events[0].Kind != diagnostics.KindPrompt || events[0].Prompt != "diagnostic prompt" {
+		t.Fatalf("prompt event = %+v", events[0])
+	}
+	if events[1].Kind != diagnostics.KindAwaitingModel || events[1].ContextMilliseconds < 4 {
+		t.Fatalf("awaiting event = %+v", events[1])
+	}
+	if timings.ModelWaitMs() < 10 {
+		t.Fatalf("model wait = %dms, want at least 10ms", timings.ModelWaitMs())
+	}
+}
+
+func TestProviderDoesNotPublishPromptWithoutVerboseDiagnostics(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"response":"ok"}`))
+	}))
+	defer server.Close()
+
+	recorder := &recordingDiagnostics{}
+	provider, err := New(Options{BaseURL: server.URL, Model: "test-model", Prompt: staticPrompt{value: "hidden"}, Diagnostics: recorder})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	_, err = provider.Complete(context.Background(), completion.Request{StateID: "42", Language: "go", Timings: &completion.RequestTimings{}})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	for _, event := range recorder.Events() {
+		if event.Kind == diagnostics.KindPrompt {
+			t.Fatalf("non-verbose diagnostics published prompt: %+v", event)
+		}
 	}
 }
 

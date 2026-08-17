@@ -204,6 +204,22 @@ Switch model from Neovim:
 :InlinerModelInfo
 ```
 
+### Live Core Diagnostics
+
+Start the standalone diagnostic process before starting or restarting `inliner-core`:
+
+```sh
+inliner-core debug
+```
+
+It follows completion requests live and reports context preparation time, model wait time, and the final result. To include each complete model prompt:
+
+```sh
+inliner-core debug --verbose
+```
+
+The diagnostic process communicates with core over a local Unix socket. If it is not running when core starts, diagnostics use a no-op publisher with no socket writes or background diagnostic goroutine.
+
 ## Development Verification
 
 Run all current checks:

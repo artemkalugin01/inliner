@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aokalugin/inliner/inliner-core/internal/completion"
+	"github.com/aokalugin/inliner/inliner-core/internal/diagnostics"
 	"github.com/aokalugin/inliner/inliner-core/internal/document"
 	"github.com/aokalugin/inliner/inliner-core/internal/edithistory"
 	"github.com/aokalugin/inliner/inliner-core/internal/gocontext"
@@ -23,13 +24,14 @@ import (
 )
 
 type Session struct {
-	transport *protocol.Transport
-	complete  *completion.Service
-	documents *document.Store
-	history   edithistory.Provider
-	collector *gocontext.Collector
-	telemetry telemetry.Recorder
-	options   Options
+	transport   *protocol.Transport
+	complete    *completion.Service
+	documents   *document.Store
+	history     edithistory.Provider
+	collector   *gocontext.Collector
+	telemetry   telemetry.Recorder
+	diagnostics diagnostics.Publisher
+	options     Options
 
 	mu        sync.Mutex
 	latest    map[string]string
@@ -49,6 +51,7 @@ type Options struct {
 	TelemetryEnabled  bool
 	TelemetryDir      string
 	TelemetryRecorder telemetry.Recorder
+	Diagnostics       diagnostics.Publisher
 	RequestTimeout    time.Duration
 	WindowBytes       int
 }
@@ -89,20 +92,25 @@ func New(transport *protocol.Transport, complete *completion.Service, options ..
 			}
 		}
 	}
+	diagnosticPublisher := resolved.Diagnostics
+	if diagnosticPublisher == nil {
+		diagnosticPublisher = diagnostics.Noop()
+	}
 
 	return &Session{
-		transport: transport,
-		complete:  complete,
-		documents: document.NewStore(),
-		history:   edithistory.NewMemoryProvider(edithistory.MemoryOptions{}),
-		collector: gocontext.NewCollector(),
-		telemetry: recorder,
-		options:   resolved,
-		latest:    make(map[string]string),
-		cancels:   make(map[string]context.CancelFunc),
-		requests:  make(map[string]completion.Request),
-		cache:     completion.NewAcceptanceCache(completion.CacheOptions{}),
-		dismissed: completion.NewDismissalCache(completion.CacheOptions{}),
+		transport:   transport,
+		complete:    complete,
+		documents:   document.NewStore(),
+		history:     edithistory.NewMemoryProvider(edithistory.MemoryOptions{}),
+		collector:   gocontext.NewCollector(),
+		telemetry:   recorder,
+		diagnostics: diagnosticPublisher,
+		options:     resolved,
+		latest:      make(map[string]string),
+		cancels:     make(map[string]context.CancelFunc),
+		requests:    make(map[string]completion.Request),
+		cache:       completion.NewAcceptanceCache(completion.CacheOptions{}),
+		dismissed:   completion.NewDismissalCache(completion.CacheOptions{}),
 	}
 }
 
@@ -271,6 +279,12 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 	if !ok {
 		return fmt.Errorf("no document content for %q", path)
 	}
+	s.diagnostics.Publish(diagnostics.Event{
+		Kind:      diagnostics.KindRequestStarted,
+		RequestID: stateID,
+		StateID:   stateID,
+		FilePath:  path,
+	})
 
 	window := document.AroundCursor(content, offset, s.options.WindowBytes)
 	cursorLine := lineNumber(content, offset)
@@ -292,6 +306,7 @@ func (s *Session) completeAtCursor(ctx context.Context, stateID string, path str
 	request.RecentEdits = s.recentEdits(path, cursorLine, request)
 	life.recentEditSelection = time.Since(recentStarted)
 	life.requestBuild = time.Since(requestStarted)
+	request.Timings.SetRequestBuild(life.requestBuild)
 	s.rememberRequest(request)
 
 	if text, ok := s.cache.Lookup(request); ok {
@@ -528,6 +543,33 @@ func (s *Session) recordTelemetry(request completion.Request, life lifecycle) {
 		event.SiblingMethods = len(request.Package.Siblings)
 	}
 	s.telemetry.Record(event)
+	s.recordDiagnostics(request, life)
+}
+
+func (s *Session) recordDiagnostics(request completion.Request, life lifecycle) {
+	status := diagnostics.StatusOK
+	switch {
+	case life.err != "" || life.status == "error":
+		status = diagnostics.StatusError
+	case life.cancelled:
+		status = diagnostics.StatusCancelled
+	case life.stale:
+		status = diagnostics.StatusStale
+	case life.suppressed:
+		status = diagnostics.StatusSuppressed
+	case life.cached:
+		status = diagnostics.StatusCached
+	}
+	s.diagnostics.Publish(diagnostics.Event{
+		Kind:                diagnostics.KindResult,
+		RequestID:           request.StateID,
+		StateID:             request.StateID,
+		Status:              status,
+		ContextMilliseconds: request.Timings.ContextPreparationMs(),
+		ModelMilliseconds:   request.Timings.ModelWaitMs(),
+		Empty:               status == diagnostics.StatusOK && life.completionTextBytes == 0,
+		Error:               truncateError(life.err),
+	})
 }
 
 func truncateError(value string) string {

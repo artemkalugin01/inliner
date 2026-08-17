@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aokalugin/inliner/inliner-core/internal/completion"
+	"github.com/aokalugin/inliner/inliner-core/internal/diagnostics"
 	"github.com/aokalugin/inliner/inliner-core/internal/protocol"
 	"github.com/aokalugin/inliner/inliner-core/internal/telemetry"
 )
@@ -27,6 +28,26 @@ type recordingProvider struct {
 type recordingTelemetry struct {
 	mu     sync.Mutex
 	events []telemetry.Event
+}
+
+type recordingDiagnostics struct {
+	mu     sync.Mutex
+	events []diagnostics.Event
+}
+
+func (r *recordingDiagnostics) Publish(event diagnostics.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *recordingDiagnostics) Verbose() bool { return false }
+func (r *recordingDiagnostics) Close()        {}
+
+func (r *recordingDiagnostics) Events() []diagnostics.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]diagnostics.Event(nil), r.events...)
 }
 
 func (r *recordingTelemetry) Record(event telemetry.Event) {
@@ -388,6 +409,55 @@ func TestSessionRecordsCompletionTelemetry(t *testing.T) {
 	}
 	if event.PrefixBytes <= 0 || event.SuffixBytes <= 0 {
 		t.Fatalf("prefix/suffix bytes = %d/%d", event.PrefixBytes, event.SuffixBytes)
+	}
+}
+
+func TestSessionPublishesCompletionDiagnostics(t *testing.T) {
+	recorder := &recordingDiagnostics{}
+	provider := &recordingProvider{response: completion.Response{Items: []completion.Item{{Kind: "text", Text: "fmt.Println(name)"}, {Kind: "end"}}}}
+	output := runStateUpdate(t, provider, protocol.StateUpdate{NewID: "diagnostic-1", Updates: []protocol.Update{
+		{Kind: "file_update", Path: "/tmp/main.go", Content: "package main\n"},
+		{Kind: "cursor_update", Path: "/tmp/main.go", Offset: len("package main\n")},
+	}}, Options{Provider: "fake", Diagnostics: recorder})
+
+	if len(decodeOutput(t, output)) == 0 {
+		t.Fatal("output is empty, want completion response")
+	}
+	events := recorder.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %+v, want request start and result", events)
+	}
+	if events[0].Kind != diagnostics.KindRequestStarted || events[0].RequestID != "diagnostic-1" || events[0].FilePath != "/tmp/main.go" {
+		t.Fatalf("start event = %+v", events[0])
+	}
+	if events[1].Kind != diagnostics.KindResult || events[1].Status != diagnostics.StatusOK || events[1].Empty {
+		t.Fatalf("result event = %+v", events[1])
+	}
+}
+
+func TestCompletionDiagnosticStatuses(t *testing.T) {
+	tests := []struct {
+		name string
+		life lifecycle
+		want diagnostics.Status
+	}{
+		{name: "ok", life: lifecycle{completionTextBytes: 1}, want: diagnostics.StatusOK},
+		{name: "error", life: lifecycle{status: "error", err: "failed"}, want: diagnostics.StatusError},
+		{name: "cancelled", life: lifecycle{cancelled: true}, want: diagnostics.StatusCancelled},
+		{name: "stale", life: lifecycle{stale: true}, want: diagnostics.StatusStale},
+		{name: "suppressed", life: lifecycle{suppressed: true}, want: diagnostics.StatusSuppressed},
+		{name: "cached", life: lifecycle{cached: true, completionTextBytes: 1}, want: diagnostics.StatusCached},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &recordingDiagnostics{}
+			sess := &Session{diagnostics: recorder}
+			sess.recordDiagnostics(completion.Request{StateID: "1", Timings: &completion.RequestTimings{}}, test.life)
+			events := recorder.Events()
+			if len(events) != 1 || events[0].Status != test.want {
+				t.Fatalf("events = %+v, want status %q", events, test.want)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/aokalugin/inliner/inliner-core/internal/completion/fake"
 	"github.com/aokalugin/inliner/inliner-core/internal/completion/ollama"
 	"github.com/aokalugin/inliner/inliner-core/internal/config"
+	"github.com/aokalugin/inliner/inliner-core/internal/diagnostics"
 	"github.com/aokalugin/inliner/inliner-core/internal/prompt"
 	"github.com/aokalugin/inliner/inliner-core/internal/protocol"
 	"github.com/aokalugin/inliner/inliner-core/internal/session"
@@ -21,7 +22,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	}
 
 	transport := protocol.NewTransport(input, output)
-	service, err := completionService(cfg)
+	diagnosticPublisher := diagnostics.ConnectDefault()
+	defer diagnosticPublisher.Close()
+	service, err := completionServiceWithDiagnostics(cfg, diagnosticPublisher)
 	if err != nil {
 		return err
 	}
@@ -33,6 +36,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		OllamaNumPredict:  cfg.OllamaNumPredict,
 		TelemetryEnabled:  cfg.TelemetryEnabled,
 		TelemetryDir:      cfg.DebugDir,
+		Diagnostics:       diagnosticPublisher,
 		RequestTimeout:    cfg.RequestTimeout,
 		WindowBytes:       cfg.WindowBytes,
 	})
@@ -41,6 +45,10 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 }
 
 func completionService(cfg config.Config) (*completion.Service, error) {
+	return completionServiceWithDiagnostics(cfg, diagnostics.Noop())
+}
+
+func completionServiceWithDiagnostics(cfg config.Config, diagnosticPublisher diagnostics.Publisher) (*completion.Service, error) {
 	switch cfg.Provider {
 	case config.ProviderFake:
 		return completion.NewService(fake.Provider{}), nil
@@ -53,6 +61,7 @@ func completionService(cfg config.Config) (*completion.Service, error) {
 				Verbose: cfg.DebugVerbose,
 				Dir:     cfg.DebugDir,
 			},
+			Diagnostics: diagnosticPublisher,
 			Prompt: prompt.GoInlineBuilder{
 				MaxFiles:            cfg.PromptMaxFiles,
 				MaxImports:          cfg.PromptMaxImports,

@@ -14,16 +14,18 @@ import (
 	"time"
 
 	"github.com/aokalugin/inliner/inliner-core/internal/completion"
+	"github.com/aokalugin/inliner/inliner-core/internal/diagnostics"
 	"github.com/aokalugin/inliner/inliner-core/internal/prompt"
 )
 
 type Provider struct {
-	baseURL    string
-	model      string
-	client     *http.Client
-	prompt     prompt.Builder
-	generation GenerationOptions
-	debug      DebugOptions
+	baseURL     string
+	model       string
+	client      *http.Client
+	prompt      prompt.Builder
+	generation  GenerationOptions
+	debug       DebugOptions
+	diagnostics diagnostics.Publisher
 }
 
 type GenerationOptions struct {
@@ -32,13 +34,14 @@ type GenerationOptions struct {
 }
 
 type Options struct {
-	BaseURL    string
-	Model      string
-	Timeout    time.Duration
-	Client     *http.Client
-	Prompt     prompt.Builder
-	Generation GenerationOptions
-	Debug      DebugOptions
+	BaseURL     string
+	Model       string
+	Timeout     time.Duration
+	Client      *http.Client
+	Prompt      prompt.Builder
+	Generation  GenerationOptions
+	Debug       DebugOptions
+	Diagnostics diagnostics.Publisher
 }
 
 type DebugOptions struct {
@@ -95,7 +98,12 @@ func New(options Options) (*Provider, error) {
 		debug.Dir = filepath.Join(os.TempDir(), "inliner-debug")
 	}
 
-	return &Provider{baseURL: baseURL, model: model, client: client, prompt: promptBuilder, generation: generation, debug: debug}, nil
+	diagnosticPublisher := options.Diagnostics
+	if diagnosticPublisher == nil {
+		diagnosticPublisher = diagnostics.Noop()
+	}
+
+	return &Provider{baseURL: baseURL, model: model, client: client, prompt: promptBuilder, generation: generation, debug: debug, diagnostics: diagnosticPublisher}, nil
 }
 
 func (p *Provider) Complete(ctx context.Context, request completion.Request) (completion.Response, error) {
@@ -107,6 +115,14 @@ func (p *Provider) Complete(ctx context.Context, request completion.Request) (co
 	promptText := p.prompt.Build(request)
 	request.Timings.SetPromptBuild(time.Since(promptStarted))
 	p.writeDebugPrompt(request, promptText)
+	if p.diagnostics.Verbose() {
+		p.diagnostics.Publish(diagnostics.Event{
+			Kind:      diagnostics.KindPrompt,
+			RequestID: request.StateID,
+			StateID:   request.StateID,
+			Prompt:    promptText,
+		})
+	}
 
 	body, err := json.Marshal(generateRequest{
 		Model:  p.model,
@@ -128,15 +144,24 @@ func (p *Provider) Complete(ctx context.Context, request completion.Request) (co
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	started := time.Now()
+	p.diagnostics.Publish(diagnostics.Event{
+		Kind:                diagnostics.KindAwaitingModel,
+		RequestID:           request.StateID,
+		StateID:             request.StateID,
+		ContextMilliseconds: request.Timings.ContextPreparationMs(),
+	})
 	httpResp, err := p.client.Do(httpReq)
 	if err != nil {
-		p.writeDebugTiming(request, time.Since(started), err)
+		duration := time.Since(started)
+		request.Timings.SetModelWait(duration)
+		p.writeDebugTiming(request, duration, err)
 		return completion.Response{}, err
 	}
 	defer httpResp.Body.Close()
 
 	respBody, err := io.ReadAll(httpResp.Body)
 	duration := time.Since(started)
+	request.Timings.SetModelWait(duration)
 	if err != nil {
 		p.writeDebugTiming(request, duration, err)
 		return completion.Response{}, err
