@@ -11,6 +11,7 @@ local tests = {
   "accept_word_test.lua",
   "insert_mapping_test.lua",
   "ghost_text_test.lua",
+  "state_update_test.lua",
   "plugin_test.lua",
   "context_suppression_test.lua",
   "commands_test.lua",

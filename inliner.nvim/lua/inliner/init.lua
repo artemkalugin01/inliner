@@ -37,6 +37,7 @@ local state = {
   pending_health_kind = nil,
   last_core_error = nil,
   last_health = nil,
+  sent_paths = {},
   selected_model = defaults.ollama_model,
   cached_models = {},
   auto_suggest_enabled = defaults.auto_suggest,
@@ -233,6 +234,7 @@ local function send_state_update(bufnr, include_file, opts)
     return
   end
 
+  include_file = include_file or state.sent_paths[path] ~= true
   local row, col = cursor_position()
   local updates = {}
   if include_file then
@@ -241,6 +243,7 @@ local function send_state_update(bufnr, include_file, opts)
       path = path,
       content = buffer_content(bufnr),
     }
+    state.sent_paths[path] = true
   end
 
   updates[#updates + 1] = {
@@ -857,6 +860,7 @@ function M.start()
   if state.client and state.client:is_running() then
     return
   end
+  state.sent_paths = {}
 
   local cmd, cwd = state.config.cmd, state.config.cwd
   if not cmd then
@@ -889,6 +893,7 @@ function M.stop()
     state.client:stop()
     state.client = nil
   end
+  state.sent_paths = {}
 end
 
 function M.health()
@@ -937,6 +942,15 @@ end
 
 function M._format_bytes_for_test(value)
   return format_bytes(value)
+end
+
+function M._send_state_update_for_test(bufnr, include_file, opts)
+  return send_state_update(bufnr, include_file, opts)
+end
+
+function M._set_client_for_test(test_client)
+  state.client = test_client
+  state.sent_paths = {}
 end
 
 M.setup()
